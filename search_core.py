@@ -27,7 +27,11 @@ LOW_MATCH_SCORE = 0.70
 # 같은 기관의 두 사업이 이 이상 비슷하면 한 카드로 묶는다.
 # 10-29 측정: 김포시 챗봇 "서비스/시스템 구축" 0.974, 같은 사업의 긴급 재공고 0.930, 해마다 갱신하는 같은 용역 0.90~0.92
 SAME_PROJECT_SIM = 0.93
-CANDIDATES = 60
+# 카드 1장을 만들 때 살펴보는 후보 수. 묶이는 사업까지 찾으려고 카드 수보다 넉넉히 본다
+CANDIDATES_PER_CARD = 6
+PAGE_SIZE = 10
+# "더 보기"로 볼 수 있는 최대 카드 수. 이보다 아래 순위는 관련성이 낮다
+MAX_CARDS = 100
 
 
 def api_key():
@@ -75,14 +79,18 @@ def embed_query(text, meta):
     return vector / np.linalg.norm(vector)
 
 
-def search(query, top_k=10):
+def search_page(query, offset=0, limit=PAGE_SIZE):
+    """유사도 순 카드 offset+1번째부터 limit장과, 유사도 LOW_MATCH_SCORE 이상인 사업 수를 돌려준다."""
     query = query.strip()[:MAX_QUERY_CHARS]
+    offset = max(0, min(int(offset), MAX_CARDS))
     if not query:
-        return []
+        return {"hits": [], "related": 0, "has_more": False, "offset": offset}
     meta, vectors, docs = load_index()
     scores = vectors @ embed_query(query, meta)
+    wanted = min(offset + limit, MAX_CARDS)
     groups = []
-    for i in np.argsort(-scores)[:CANDIDATES]:
+    # 카드 묶기는 위 순위부터 차례로 해야 페이지마다 결과가 같으므로, 앞 페이지까지 다시 계산한다
+    for i in np.argsort(-scores)[: wanted * CANDIDATES_PER_CARD]:
         lead = next(
             (g for g in groups
              if docs[g["row"]]["agency"] == docs[i]["agency"]
@@ -91,12 +99,22 @@ def search(query, top_k=10):
         )
         if lead:
             lead["similar"].append(docs[i])
-        elif len(groups) < top_k:
+        elif len(groups) < wanted:
             groups.append({"row": i, "similar": []})
-    return [
+    hits = [
         {**docs[g["row"]], "score": round(float(scores[g["row"]]), 4), "similar": g["similar"]}
-        for g in groups
+        for g in groups[offset:wanted]
     ]
+    return {
+        "hits": hits,
+        "related": int((scores >= LOW_MATCH_SCORE).sum()),
+        "has_more": wanted < MAX_CARDS and len(groups) == wanted,
+        "offset": offset,
+    }
+
+
+def search(query, top_k=PAGE_SIZE):
+    return search_page(query, 0, top_k)["hits"]
 
 
 if __name__ == "__main__":

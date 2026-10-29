@@ -44,6 +44,9 @@
   .hit summary { cursor: pointer; }
   .hit details ul { margin: 6px 0 0; padding-left: 18px; }
   .hit details a { font-weight: 400; }
+  .rank { color: var(--muted); font-size: 12px; margin-right: 6px; }
+  .count { color: var(--ink); font-weight: 700; }
+  .more { display: block; width: 100%; padding: 10px; margin-top: 4px; background: var(--card); color: var(--accent); border: 1px solid var(--line); }
   footer { color: var(--muted); font-size: 12px; margin-top: 18px; }
 </style>
 </head>
@@ -60,6 +63,7 @@
 
   <div class="status" id="status" aria-live="polite"></div>
   <div id="results"></div>
+  <button id="more" type="button" class="more" hidden>더 보기</button>
 
   <div class="notice">
     입력한 문장은 의미 검색을 위해 외부 AI 서비스(OpenRouter)로 전송된다. 이 페이지는 입력 내용을 저장하지 않지만, 기관 내부 정보나 개인정보는 넣지 않는다.
@@ -83,38 +87,60 @@
   });
 
   $("form").addEventListener("submit", (e) => { e.preventDefault(); run($("q").value); });
+  $("more").addEventListener("click", () => load(current.query, current.shown));
 
-  async function run(query) {
+  const current = { query: "", shown: 0 };
+
+  function run(query) {
     query = query.trim();
     if (!query) return;
-    $("go").disabled = true;
-    $("status").textContent = "찾는 중…";
+    current.query = query;
+    current.shown = 0;
     $("results").innerHTML = "";
+    load(query, 0);
+  }
+
+  const similar = (list) => list.length ? `
+          <details><summary>같은 기관의 비슷한 사업 ${list.length}건</summary><ul>${list.map((s) =>
+            `<li><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a> · ${esc(s.year_month)} · ${won(s.amount)}</li>`).join("")}</ul></details>` : "";
+
+  const card = (h, rank) => `
+        <div class="hit">
+          <div class="top"><a href="${esc(h.url)}" target="_blank" rel="noopener"><span class="rank">${rank}</span>${esc(h.name)}</a><span class="score">유사도 ${(h.score * 100).toFixed(0)}%</span></div>
+          <div class="meta"><span class="chip">${esc(h.type)}</span>${esc(h.agency)} · ${esc(h.agency_type)} · ${esc(h.year_month)} 발주 예정 · ${won(h.amount)}</div>${similar(h.similar || [])}
+        </div>`;
+
+  async function load(query, offset) {
+    $("go").disabled = true;
+    $("more").disabled = true;
+    $("more").hidden = offset === 0;
+    if (offset === 0) $("status").textContent = "찾는 중…";
+    else $("more").textContent = "불러오는 중…";
     try {
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q: query }),
+        body: JSON.stringify({ q: query, offset }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "검색에 실패했습니다");
+      if (query !== current.query) return;
       $("total").textContent = data.total.toLocaleString();
-      $("status").textContent = `"${data.query}"와 의미가 가까운 사업 ${data.hits.length}건`;
       const low = data.low_match
         ? `<div class="low">질의와 딱 맞는 사업이 없을 수 있다. 가장 가까운 사업도 유사도가 낮으니, 다른 표현으로 다시 찾아보기를 권한다.</div>`
         : "";
-      const similar = (list) => list.length ? `
-          <details><summary>같은 기관의 비슷한 사업 ${list.length}건</summary><ul>${list.map((s) =>
-            `<li><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a> · ${esc(s.year_month)} · ${won(s.amount)}</li>`).join("")}</ul></details>` : "";
-      $("results").innerHTML = low + data.hits.map((h) => `
-        <div class="hit">
-          <div class="top"><a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.name)}</a><span class="score">유사도 ${(h.score * 100).toFixed(0)}%</span></div>
-          <div class="meta"><span class="chip">${esc(h.type)}</span>${esc(h.agency)} · ${esc(h.agency_type)} · ${esc(h.year_month)} 발주 예정 · ${won(h.amount)}</div>${similar(h.similar || [])}
-        </div>`).join("");
+      $("results").insertAdjacentHTML("beforeend", low + data.hits.map((h, i) => card(h, offset + i + 1)).join(""));
+      current.shown = offset + data.hits.length;
+      const pct = Math.round(data.related_score * 100);
+      $("status").innerHTML = `"${esc(data.query)}"와 유사도 ${pct}% 이상인 사업 <span class="count">${data.related.toLocaleString()}건</span> · 1~${current.shown}위 표시 중 (전체 ${data.total.toLocaleString()}건 대상)`;
+      $("more").hidden = !data.has_more;
+      $("more").textContent = `더 보기 (${current.shown + 1}~${current.shown + 10}위)`;
     } catch (err) {
       $("status").textContent = err.message;
+      $("more").textContent = "다시 시도";
     } finally {
       $("go").disabled = false;
+      $("more").disabled = false;
     }
   }
 </script>

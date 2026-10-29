@@ -24,14 +24,29 @@ def index():
 @app.post("/api/search")
 def api_search():
     # 질의 문장이 접속 기록의 주소에 남지 않도록 GET 주소 대신 POST 본문으로 받는다
-    query = str((request.get_json(silent=True) or {}).get("q", ""))
+    body = request.get_json(silent=True) or {}
+    query = str(body.get("q", ""))
     try:
-        hits = search_core.search(query, top_k=10)
+        offset = int(body.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        page = search_core.search_page(query, offset=offset)
     except TimeoutError:
         return jsonify(error="검색 서버가 응답하지 않습니다. 잠시 뒤 다시 시도해 주세요."), 504
     meta, _, _ = search_core.load_index()
-    low_match = bool(hits) and hits[0]["score"] < search_core.LOW_MATCH_SCORE
-    return jsonify(query=query[: search_core.MAX_QUERY_CHARS], total=meta["count"], hits=hits, low_match=low_match)
+    # 1위 유사도는 첫 페이지에서만 알 수 있으므로 안내 여부도 첫 페이지에서만 판단한다
+    low_match = page["offset"] == 0 and bool(page["hits"]) and page["hits"][0]["score"] < search_core.LOW_MATCH_SCORE
+    return jsonify(
+        query=query[: search_core.MAX_QUERY_CHARS],
+        total=meta["count"],
+        related=page["related"],
+        related_score=search_core.LOW_MATCH_SCORE,
+        offset=page["offset"],
+        has_more=page["has_more"],
+        hits=page["hits"],
+        low_match=low_match,
+    )
 
 
 if __name__ == "__main__":
