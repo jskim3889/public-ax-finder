@@ -3,6 +3,7 @@
 브라우저에는 키를 두지 않는다. 브라우저는 질의 문장만 보내고, 임베딩 호출은 이 서버가 한다 (7강 #14).
 """
 
+import urllib.error
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -30,10 +31,19 @@ def api_search():
         offset = int(body.get("offset", 0))
     except (TypeError, ValueError):
         offset = 0
+    # 실패는 모두 JSON으로 돌려준다. 화면이 "찾는 중…"에 멈추지 않고 원인별 안내를 띄울 수 있게 한다
     try:
         page = search_core.search_page(query, offset=offset)
     except TimeoutError:
-        return jsonify(error="검색 서버가 응답하지 않습니다. 잠시 뒤 다시 시도해 주세요."), 504
+        return jsonify(kind="timeout", error="AI 검색 서비스가 제때 응답하지 않았습니다. 잠시 뒤 다시 시도해 주세요."), 504
+    except urllib.error.HTTPError as e:
+        if e.code in (402, 429):
+            return jsonify(kind="quota", error="AI 검색 서비스 사용량이 한도에 도달했습니다. 잠시 뒤 다시 시도해 주세요."), 503
+        return jsonify(kind="upstream", error=f"AI 검색 서비스 오류({e.code})로 검색하지 못했습니다."), 502
+    except urllib.error.URLError:
+        return jsonify(kind="upstream", error="AI 검색 서비스에 연결하지 못했습니다. 잠시 뒤 다시 시도해 주세요."), 502
+    except RuntimeError:
+        return jsonify(kind="config", error="검색 서버 설정 문제로 검색하지 못했습니다."), 500
     meta, _, _ = search_core.load_index()
     # 1위 유사도는 첫 페이지에서만 알 수 있으므로 안내 여부도 첫 페이지에서만 판단한다
     low_match = page["offset"] == 0 and bool(page["hits"]) and page["hits"][0]["score"] < search_core.LOW_MATCH_SCORE

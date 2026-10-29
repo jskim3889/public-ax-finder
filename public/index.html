@@ -56,6 +56,8 @@
   .more:hover { background: var(--brand-soft); }
   .notice-box { margin-top: 8px; padding: 8px 10px; background: var(--info-bg); border-radius: 4px; font-size: 13px; color: var(--body); }
   .notice-box + .notice-box { margin-top: 4px; }
+  .status.error { color: var(--warn); background: var(--warn-bg); border-radius: 6px; padding: 8px 12px; font-size: 14px; }
+  .status .retry { margin-left: 8px; padding: 3px 12px; font-size: 13px; }
   .no-notice { margin-top: 6px; font-size: 12px; color: var(--muted); }
   .notice-box .label { color: var(--brand); font-weight: 700; margin-right: 6px; }
   .label.cancel { color: #b3261e; font-weight: 700; }
@@ -158,21 +160,55 @@
           <div class="meta"><span class="chip">${esc(h.type)}</span>${esc(h.agency)} · ${esc(h.agency_type)} · ${esc(h.year_month)} 발주 예정 · ${won(h.amount)}</div>${notices(h)}${similar(h.similar || [])}
         </div>`;
 
+  // 서버는 AI 서비스를 15초씩 최대 2번 기다린다. 화면은 그보다 조금 길게 기다린 뒤 멈추고 다시 시도를 권한다
+  const SLOW_SEC = 5;
+  const GIVE_UP_SEC = 35;
+
+  // 진행 상황 문구: "결과가 없음"과 "오래 걸림"을 구분해 보여 준다
+  function progress(offset, sec) {
+    const text = sec < SLOW_SEC
+      ? `찾는 중… ${sec}초`
+      : `AI 검색 서비스 응답을 기다리는 중입니다… ${sec}초 (보통 1~2초 걸리며, ${GIVE_UP_SEC}초가 지나면 멈춥니다)`;
+    if (offset === 0) { $("status").className = "status"; $("status").textContent = text; }
+    else $("more").textContent = text;
+  }
+
+  function showError(message, query, offset) {
+    $("status").className = "status error";
+    $("status").innerHTML = `${esc(message)} <button type="button" class="retry">다시 시도</button>`;
+    $("status").querySelector(".retry").onclick = () => offset === 0 ? run(query) : load(query, offset);
+    if (offset > 0) $("more").textContent = `더 보기 (${offset + 1}~${offset + 10}위)`;
+  }
+
   async function load(query, offset) {
     $("go").disabled = true;
     $("more").disabled = true;
     $("more").hidden = offset === 0;
-    if (offset === 0) $("status").textContent = "찾는 중…";
-    else $("more").textContent = "불러오는 중…";
+    const started = Date.now();
+    const controller = new AbortController();
+    progress(offset, 0);
+    const timer = setInterval(() => {
+      const sec = Math.floor((Date.now() - started) / 1000);
+      if (sec >= GIVE_UP_SEC) controller.abort();
+      else progress(offset, sec);
+    }, 1000);
     try {
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ q: query, offset }),
+        signal: controller.signal,
       });
-      const data = await res.json();
+      // 배포 서버가 시간 초과 등으로 HTML 오류 페이지를 줄 수 있어 JSON이 아니어도 안내를 띄운다
+      const data = await res.json().catch(() => ({ error: `서버 응답을 읽지 못했습니다 (HTTP ${res.status}).` }));
       if (!res.ok) throw new Error(data.error || "검색에 실패했습니다");
       if (query !== current.query) return;
+      if (!data.hits.length) {
+        $("status").className = "status";
+        $("status").textContent = offset === 0 ? "검색 결과가 없습니다. 다른 표현으로 찾아보세요." : "더 볼 결과가 없습니다.";
+        $("more").hidden = true;
+        return;
+      }
       $("total").textContent = data.total.toLocaleString();
       const low = data.low_match
         ? `<div class="low">질의와 딱 맞는 사업이 없을 수 있다. 가장 가까운 사업도 유사도가 낮으니, 다른 표현으로 다시 찾아보기를 권한다.</div>`
@@ -183,10 +219,14 @@
       $("status").innerHTML = `"${esc(data.query)}"와 유사도 ${pct}% 이상인 사업 <span class="count">${data.related.toLocaleString()}건</span> · 1~${current.shown}위 표시 중 (전체 ${data.total.toLocaleString()}건 대상)`;
       $("more").hidden = !data.has_more;
       $("more").textContent = `더 보기 (${current.shown + 1}~${current.shown + 10}위)`;
+      $("status").className = "status";
     } catch (err) {
-      $("status").textContent = err.message;
-      $("more").textContent = "다시 시도";
+      const message = err.name === "AbortError"
+        ? `${GIVE_UP_SEC}초 동안 응답이 없어 검색을 멈췄습니다. AI 검색 서비스가 일시적으로 느릴 수 있습니다.`
+        : err.message === "Failed to fetch" ? "인터넷 연결 또는 서버 접속에 실패했습니다." : err.message;
+      showError(message, query, offset);
     } finally {
+      clearInterval(timer);
       $("go").disabled = false;
       $("more").disabled = false;
     }

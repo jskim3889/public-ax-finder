@@ -10,6 +10,7 @@
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from functools import lru_cache
 from pathlib import Path
@@ -72,9 +73,13 @@ def fetch_embedding(text, model):
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT_SEC) as response:
                 return tuple(json.load(response)["data"][0]["embedding"])
-        except TimeoutError:
-            if attempt == ATTEMPTS - 1:
+        except (TimeoutError, urllib.error.URLError) as error:
+            # 연결 단계의 시간 초과는 URLError로 감싸져 온다. 시간 초과만 다시 묻고 나머지는 그대로 올린다
+            timed_out = isinstance(error, TimeoutError) or isinstance(getattr(error, "reason", None), TimeoutError)
+            if isinstance(error, urllib.error.HTTPError) or not timed_out:
                 raise
+            if attempt == ATTEMPTS - 1:
+                raise TimeoutError("embedding request timed out") from error
 
 
 def embed_query(text, meta):
