@@ -52,6 +52,11 @@ def load_index():
     vectors = np.fromfile(DATA_DIR / "vectors.f16", dtype=np.float16)
     vectors = vectors.reshape(meta["count"], meta["dimension"]).astype(np.float32)
     docs = json.loads((DATA_DIR / "docs.json").read_text(encoding="utf-8"))
+    # 발주계획과 연결된 실제 용역 입찰공고(fetch_notices.py link 결과). 없으면 빈 목록
+    notices_path = DATA_DIR / "notices.json"
+    notices = json.loads(notices_path.read_text(encoding="utf-8")) if notices_path.exists() else {}
+    for doc in docs:
+        doc["notices"] = notices.get(doc["id"], [])
     return meta, vectors, docs
 
 

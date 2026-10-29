@@ -54,6 +54,15 @@
   .count { color: var(--brand); font-weight: 800; }
   .more { display: block; width: 100%; padding: 11px; margin-top: 6px; background: var(--card); color: var(--brand); border: 1.5px solid var(--brand); }
   .more:hover { background: var(--brand-soft); }
+  .notice-box { margin-top: 8px; padding: 8px 10px; background: var(--info-bg); border-radius: 4px; font-size: 13px; color: var(--body); }
+  .notice-box + .notice-box { margin-top: 4px; }
+  .no-notice { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .notice-box .label { color: var(--brand); font-weight: 700; margin-right: 6px; }
+  .label.cancel { color: #b3261e; font-weight: 700; }
+  .notice-box .nname { color: var(--ink); }
+  .notice-box a { color: var(--brand); font-weight: 600; }
+  .notice-box .files { margin-top: 2px; color: var(--muted); }
+  .notice-box .files a { font-weight: 400; color: var(--brand-deep); }
   footer { color: var(--muted); font-size: 12px; margin-top: 22px; padding-top: 12px; border-top: 2px solid var(--brand); }
 </style>
 </head>
@@ -71,7 +80,7 @@
         <p class="tagline">AI 도입 사례 · 의미 검색 · 나라장터 발주계획</p>
       </div>
     </div>
-  <p class="lead">우리 기관과 비슷한 AI 도입 사업을 문장으로 찾아본다. 나라장터 용역 발주계획 중 AI 관련 사업 <span id="total">5,593</span>건(2024-01 ~ 2026-09)이 대상이다.</p>
+  <p class="lead">다른 기관에서는 어떤 AI 사업을 수행하는지 확인해보세요! 나라장터 용역 <span id="total">5,593</span>건(2024-01 ~ 2026-09)을 대상으로 찾아볼 수 있습니다</p>
   </header>
 
   <form id="form">
@@ -90,7 +99,7 @@
   <div class="notice">
     검색 결과는 AI 임베딩으로 사업명의 의미가 가까운 순서를 보여 준 것이다. 발주계획은 사전 계획이라 실제 입찰공고·계약과 다를 수 있다. 사업명만으로 찾기 때문에 사업 내용이 비슷해도 이름이 다르면 놓칠 수 있다. 원문은 각 사업의 나라장터 링크에서 확인한다.
   </div>
-  <footer>데이터: 조달청 나라장터 발주계획현황서비스(공공데이터포털 15129462). 담당자 이름·연락처는 수집하지 않았다. KAIST ITM.690 수업 과제로 만든 정보 제공용 페이지다.</footer>
+  <footer>데이터: 조달청 나라장터 발주계획현황서비스(공공데이터포털 15129462), 실제 공고는 나라장터 입찰공고정보서비스(15129394)의 용역 공고를 발주계획의 공고번호로 연결했다. 담당자 이름·연락처와 업체가 제출한 서류는 싣지 않았다. KAIST ITM.690 수업 과제로 만든 정보 제공용 페이지다.</footer>
 </main>
 <script>
   const EXAMPLES = ["민원 상담 챗봇을 도입한 기관", "종이 서류를 자동으로 읽어 입력하는 사업", "공무원 대상 생성형 AI 교육", "CCTV 영상으로 위험 상황을 감지", "AI 도입 전략을 세우는 컨설팅"];
@@ -121,12 +130,32 @@
 
   const similar = (list) => list.length ? `
           <details><summary>같은 기관의 비슷한 사업 ${list.length}건</summary><ul>${list.map((s) =>
-            `<li><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a> · ${esc(s.year_month)} · ${won(s.amount)}</li>`).join("")}</ul></details>` : "";
+            `<li><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a> · ${esc(s.year_month)} · ${won(s.amount)}${similarNotice(s)}</li>`).join("")}</ul></details>` : "";
+
+  // 묶인 사업도 실제 공고가 있으면 공고 링크를, 취소됐으면 "취소된 공고"를 붙인다
+  const similarNotice = (s) => {
+    const n = (s.notices || [])[0];
+    if (!n) return "";
+    const tag = n.kind === "취소공고" ? `<span class="label cancel">취소된 공고</span>` : "실제 공고";
+    return ` · ${tag} <a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.posted)}</a>`;
+  };
+
+  // 발주계획에 연결된 실제 용역 입찰공고 (최신 차수). 공고명이 계획 사업명과 다를 때만 공고명을 따로 보여 준다
+  const notices = (h) => !(h.notices || []).length
+    ? `<div class="no-notice">연결된 입찰공고 없음 (발주계획에 공고번호가 없음)</div>`
+    : h.notices.slice(0, 2).map((n) => {
+    // 첨부는 공고문·제안요청서·과업내용서 같은 핵심 서류만 실려 온다 (fetch_notices.py에서 거름)
+    const files = n.files.length ? `<div class="files">첨부: ${n.files.slice(0, 3).map((f) =>
+      `<a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.name)}</a>`).join(" · ")}${n.files.length > 3 ? ` 외 ${n.files.length - 3}건` : ""}</div>` : "";
+    const nname = n.name !== h.name ? `<span class="nname">${esc(n.name)}</span> · ` : "";
+    const label = n.kind === "취소공고" ? `<span class="label cancel">취소된 공고</span>` : `<span class="label">실제 공고</span>`;
+    return `<div class="notice-box">${label}${nname}${esc(n.posted)} 공고 · 개찰 ${esc(n.open.slice(0, 10))} · 추정가격 ${won(n.price)}${n.method ? " · " + esc(n.method) : ""} · <a href="${esc(n.url)}" target="_blank" rel="noopener">공고 보기</a>${files}</div>`;
+  }).join("");
 
   const card = (h, rank) => `
         <div class="hit">
           <div class="top"><a href="${esc(h.url)}" target="_blank" rel="noopener"><span class="rank">${rank}</span>${esc(h.name)}</a><span class="score">유사도 ${(h.score * 100).toFixed(0)}%</span></div>
-          <div class="meta"><span class="chip">${esc(h.type)}</span>${esc(h.agency)} · ${esc(h.agency_type)} · ${esc(h.year_month)} 발주 예정 · ${won(h.amount)}</div>${similar(h.similar || [])}
+          <div class="meta"><span class="chip">${esc(h.type)}</span>${esc(h.agency)} · ${esc(h.agency_type)} · ${esc(h.year_month)} 발주 예정 · ${won(h.amount)}</div>${notices(h)}${similar(h.similar || [])}
         </div>`;
 
   async function load(query, offset) {
