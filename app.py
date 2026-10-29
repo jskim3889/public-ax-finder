@@ -21,15 +21,17 @@ def index():
     return send_from_directory(PUBLIC_DIR, "index.html")
 
 
-@app.get("/api/search")
+@app.post("/api/search")
 def api_search():
-    query = request.args.get("q", "")
+    # 질의 문장이 접속 기록의 주소에 남지 않도록 GET 주소 대신 POST 본문으로 받는다
+    query = str((request.get_json(silent=True) or {}).get("q", ""))
     try:
         hits = search_core.search(query, top_k=10)
     except TimeoutError:
         return jsonify(error="검색 서버가 응답하지 않습니다. 잠시 뒤 다시 시도해 주세요."), 504
     meta, _, _ = search_core.load_index()
-    return jsonify(query=query[: search_core.MAX_QUERY_CHARS], total=meta["count"], hits=hits)
+    low_match = bool(hits) and hits[0]["score"] < search_core.LOW_MATCH_SCORE
+    return jsonify(query=query[: search_core.MAX_QUERY_CHARS], total=meta["count"], hits=hits, low_match=low_match)
 
 
 if __name__ == "__main__":

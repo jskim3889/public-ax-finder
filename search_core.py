@@ -21,6 +21,13 @@ API_URL = "https://openrouter.ai/api/v1/embeddings"
 MAX_QUERY_CHARS = 200
 TIMEOUT_SEC = 15
 ATTEMPTS = 2
+# 1위 유사도가 이보다 낮으면 화면에 "딱 맞는 사업이 없을 수 있다"를 띄운다.
+# 10-29 측정: 정상 질의 1위 최저 0.729, 무관 질의("asdfqwer") 1위 0.691
+LOW_MATCH_SCORE = 0.70
+# 같은 기관의 두 사업이 이 이상 비슷하면 한 카드로 묶는다.
+# 10-29 측정: 김포시 챗봇 "서비스/시스템 구축" 0.974, 같은 사업의 긴급 재공고 0.930, 해마다 갱신하는 같은 용역 0.90~0.92
+SAME_PROJECT_SIM = 0.93
+CANDIDATES = 60
 
 
 def api_key():
@@ -74,8 +81,22 @@ def search(query, top_k=10):
         return []
     meta, vectors, docs = load_index()
     scores = vectors @ embed_query(query, meta)
-    order = np.argsort(-scores)[:top_k]
-    return [{**docs[i], "score": round(float(scores[i]), 4)} for i in order]
+    groups = []
+    for i in np.argsort(-scores)[:CANDIDATES]:
+        lead = next(
+            (g for g in groups
+             if docs[g["row"]]["agency"] == docs[i]["agency"]
+             and float(vectors[g["row"]] @ vectors[i]) >= SAME_PROJECT_SIM),
+            None,
+        )
+        if lead:
+            lead["similar"].append(docs[i])
+        elif len(groups) < top_k:
+            groups.append({"row": i, "similar": []})
+    return [
+        {**docs[g["row"]], "score": round(float(scores[g["row"]]), 4), "similar": g["similar"]}
+        for g in groups
+    ]
 
 
 if __name__ == "__main__":
