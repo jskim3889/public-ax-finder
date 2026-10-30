@@ -50,11 +50,14 @@ Vercel은 `app.py`의 Flask 인스턴스 `app`을 찾아 함수 하나로 실행
 | `LEAD_FORM_ENABLED` | `1`이면 켠다. 없으면 화면에 나타나지 않고 `/api/report`는 404 |
 | `OPERATOR_NAME` | 화면 꼬리말·개인정보 고지·메일 발신자에 표시할 운영사 이름 |
 | `LEAD_TO` | 문의를 받을 운영사 메일 주소 |
-| `SMTP_USER`, `SMTP_APP_PASSWORD` | 발송용 Gmail 계정과 앱 비밀번호(16자리). 발송 전용 계정을 권한다 |
+| `SMTP_USER`, `SMTP_APP_PASSWORD` | 발송 계정과 비밀번호. Gmail은 앱 비밀번호(16자리), 하이웍스는 메일 계정 비밀번호 |
+| `SMTP_HOST`, `SMTP_PORT` | 발송 서버. 기본 `smtp.gmail.com`·`465`. 하이웍스는 `smtps.hiworks.com`·`465`(SSL) |
 | `REPORT_MODEL` | AI 요약 모델. 기본 `anthropic/claude-haiku-5.5` |
 | `MAIL_DRY_RUN` | `1`이면 메일을 보내지 않고 `cache/outbox/`에 `.eml`로 남긴다(로컬 시험) |
 
 Gmail 앱 비밀번호: 구글 계정 관리 → 보안 → 2단계 인증 켜기 → 검색창에 "앱 비밀번호" → 이름 입력 → 생성(7강 #63).
+
+하이웍스: 웹메일 환경설정의 POP3/SMTP 설정을 "사용 함"으로 바꾼다(계정을 만들면 "사용 안함"). 발송 서버 `smtps.hiworks.com` 465 SSL. 2025년 2월부터 TLS 1.0·1.1은 지원하지 않는다(하이웍스 공지).
 
 ## 파일
 

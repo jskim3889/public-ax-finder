@@ -4,7 +4,8 @@
     LEAD_FORM_ENABLED=1        기능 켜기
     OPERATOR_NAME              화면·메일에 밝힐 운영사 이름
     LEAD_TO                    문의를 받을 운영사 메일 주소
-    SMTP_USER, SMTP_APP_PASSWORD   Gmail 계정과 앱 비밀번호 (발송용)
+    SMTP_USER, SMTP_APP_PASSWORD   발송 계정과 비밀번호 (Gmail은 앱 비밀번호)
+    SMTP_HOST, SMTP_PORT       발송 서버 (기본 smtp.gmail.com:465, 하이웍스는 smtps.hiworks.com:465, 둘 다 SSL)
     REPORT_MODEL               AI 요약 모델 (기본 anthropic/claude-haiku-5.5)
     MAIL_DRY_RUN=1             메일을 보내지 않고 cache/outbox/에 .eml로 남긴다 (로컬 시험)
 
@@ -274,7 +275,11 @@ def send(to, subject, html_body, reply_to):
     password = env("SMTP_APP_PASSWORD")
     if not (sender and password):
         raise RuntimeError("메일 발송 설정(SMTP_USER, SMTP_APP_PASSWORD)이 없습니다")
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
+    # Gmail(smtp.gmail.com)과 하이웍스(smtps.hiworks.com) 모두 465 포트 SSL로 받는다.
+    # 하이웍스는 웹메일 설정에서 POP3/SMTP를 "사용 함"으로 바꿔야 발송된다 (계정을 만들면 "사용 안함")
+    host = env("SMTP_HOST") or "smtp.gmail.com"
+    port = int(env("SMTP_PORT") or 465)
+    with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
         smtp.login(sender, password)
         smtp.send_message(msg)
     return "sent"
