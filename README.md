@@ -41,12 +41,29 @@ Vercel은 `app.py`의 Flask 인스턴스 `app`을 찾아 함수 하나로 실행
 | `OPENROUTER_API_KEY` | 질의 문장 임베딩. OpenRouter에서 키 사용 한도를 걸어 둔다 |
 | `DATA_GO_KR_SERVICE_KEY` | 공고 수집(`fetch_notices.py`)에만 쓴다. 배포 서버에는 필요 없다 |
 
+## 비교 분석 리포트 메일 받기 (운영사 배포본 전용, kds-lead 브랜치)
+
+결과 카드에서 "비교 담기"로 사업을 고르면, 담당자명·소속·이메일·필요사항을 받아 비교표와 AI 요약을 메일로 보낸다. 같은 내용과 문의자 정보는 운영사 메일로도 간다. 이용자 입력은 서버에 저장하지 않는다.
+
+| 환경변수 | 용도 |
+| --- | --- |
+| `LEAD_FORM_ENABLED` | `1`이면 켠다. 없으면 화면에 나타나지 않고 `/api/report`는 404 |
+| `OPERATOR_NAME` | 화면 꼬리말·개인정보 고지·메일 발신자에 표시할 운영사 이름 |
+| `LEAD_TO` | 문의를 받을 운영사 메일 주소 |
+| `SMTP_USER`, `SMTP_APP_PASSWORD` | 발송용 Gmail 계정과 앱 비밀번호(16자리). 발송 전용 계정을 권한다 |
+| `REPORT_MODEL` | AI 요약 모델. 기본 `anthropic/claude-haiku-5.5` |
+| `MAIL_DRY_RUN` | `1`이면 메일을 보내지 않고 `cache/outbox/`에 `.eml`로 남긴다(로컬 시험) |
+
+Gmail 앱 비밀번호: 구글 계정 관리 → 보안 → 2단계 인증 켜기 → 검색창에 "앱 비밀번호" → 이름 입력 → 생성(7강 #63).
+
 ## 파일
 
 | 파일 | 내용 |
 | --- | --- |
 | `app.py` | Flask 서버. `/`(화면), `POST /api/search` 본문 `{"q": "질의", "offset": 0}`(검색, 10건씩 최대 100위) |
 | `search_core.py` | 질의 임베딩과 유사도 검색 |
+| `report.py` | 비교 분석 리포트 생성·AI 요약·메일 발송 (운영사 배포본 전용) |
+| `fetch_notices.py` | 실제 입찰공고 수집과 발주계획 연결 |
 | `public/index.html` | 검색 화면 |
 | `data/vectors.f16`, `data/docs.json`, `data/index.meta.json` | 색인 (공개 정보만, 담당자 이름·연락처 없음) |
 | `build_index.py` | 과제 1 임베딩에서 색인을 다시 만든다. 상위 폴더 `../data`가 있어야 한다 |

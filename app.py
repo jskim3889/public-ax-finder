@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+import report
 import search_core
 
 PUBLIC_DIR = Path(__file__).resolve().parent / "public"
@@ -57,6 +58,29 @@ def api_search():
         hits=page["hits"],
         low_match=low_match,
     )
+
+
+@app.get("/api/config")
+def api_config():
+    # 리포트 메일 기능은 운영사 배포본에서만 켠다 (LEAD_FORM_ENABLED=1)
+    return jsonify(lead_form=report.enabled(), operator=report.operator(), max_projects=report.MAX_PROJECTS)
+
+
+@app.post("/api/report")
+def api_report():
+    if not report.enabled():
+        return jsonify(error="이 배포본에서는 리포트 메일 기능을 제공하지 않습니다."), 404
+    body = request.get_json(silent=True) or {}
+    ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip()
+    try:
+        return jsonify(report.handle(body, ip))
+    except report.ReportError as e:
+        return jsonify(error=str(e)), 400
+    except (TimeoutError, urllib.error.URLError):
+        return jsonify(error="AI 요약을 만드는 중 응답이 늦어 리포트를 보내지 못했습니다. 잠시 뒤 다시 시도해 주세요."), 504
+    except (RuntimeError, OSError):
+        # 메일 계정 설정 누락, SMTP 접속·인증 실패 등. 이용자 입력은 다시 보내면 된다
+        return jsonify(error="리포트 메일을 보내지 못했습니다. 잠시 뒤 다시 시도해 주세요."), 502
 
 
 if __name__ == "__main__":
