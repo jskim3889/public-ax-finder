@@ -138,11 +138,15 @@ def ai_summary(form, projects, summary):
         f"<needs>{form['needs']}</needs>\n\n"
         "작성 규칙:\n"
         "- 위 목록과 수치에 있는 사실만 쓴다. 목록에 없는 사업 내용, 성과, 업체, 법령은 지어내지 않는다\n"
-        "- 사업을 언급할 때 [번호]를 붙인다\n"
-        "- 필요사항과 관련해 목록에서 읽을 수 있는 공통점, 예산 규모, 발주 시기, 공고 방식의 차이를 짚는다\n"
-        "- 목록만으로 답할 수 없는 부분은 '제공된 정보로는 확인되지 않습니다'라고 쓴다\n"
         "- 특정 업체를 추천하거나 입찰 결과를 예측하지 않는다\n"
-        "- 공공기관 담당자에게 보내는 글이므로 ~습니다 체로, 5~8문장, 머리말 없이 본문만 쓴다"
+        "- 공공기관 담당자에게 보내는 글이므로 문장은 ~습니다 체로 쓴다\n\n"
+        "출력 형식: 아래 JSON 하나만 출력한다. 코드 블록이나 다른 글은 붙이지 않는다.\n"
+        '{"rows": [{"aspect": "관점", "finding": "목록에서 확인되는 내용 1~2문장", '
+        '"refs": [근거 사업 번호들], "note": "담당자가 참고하거나 확인할 점 1문장"}]}\n'
+        "rows는 다음 관점을 이 순서로 하나씩 담는다: 필요사항과 가까운 사업, 예산 규모, 발주 시기, "
+        "공고·계약 방식, 사업 유형·범위, 목록으로 확인되지 않는 것.\n"
+        "- refs에는 finding의 근거가 된 사업 번호만 숫자로 넣는다. 근거가 요약 수치뿐이면 빈 목록\n"
+        "- 목록만으로 답할 수 없으면 finding에 '제공된 정보로는 확인되지 않습니다'라고 쓴다"
     )
     model = os.environ.get("REPORT_MODEL", "anthropic/claude-haiku-5.5")
     # 10-30 시험: 토큰 한도 900에서는 모델 내부 추론이 한도를 다 써서 본문이 비거나 잘렸다.
@@ -158,8 +162,32 @@ def ai_summary(form, projects, summary):
             choice = json.load(response)["choices"][0]
         text = (choice["message"].get("content") or "").strip()
         if text and choice.get("finish_reason") == "stop":
-            return text
+            rows = parse_rows(text, len(projects))
+            if rows:
+                return rows
     raise TimeoutError("AI 요약 본문이 비었거나 잘렸습니다")
+
+
+def parse_rows(text, count):
+    """모델이 낸 JSON을 표 행으로 바꾼다. 형식이 깨졌거나 없는 사업 번호는 버린다"""
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return []
+    try:
+        rows = json.loads(match.group(0)).get("rows")
+    except (ValueError, AttributeError):
+        return []
+    clean = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        aspect, finding = str(row.get("aspect", "")).strip(), str(row.get("finding", "")).strip()
+        if not (aspect and finding):
+            continue
+        refs = sorted({r for r in row.get("refs") or [] if isinstance(r, int) and 1 <= r <= count})
+        clean.append({"aspect": aspect[:30], "finding": finding[:400], "refs": refs,
+                      "note": str(row.get("note", "")).strip()[:300]})
+    return clean[:8]
 
 
 def won(n):
@@ -188,7 +216,16 @@ def render(form, projects, summary, ai_text, for_operator=False):
             f'<td style="{TD}">{won(p["amount"])}</td><td style="{TD}">{notice}</td></tr>'
         )
     methods = ", ".join(f"{k} {v}건" for k, v in summary["methods"].items()) or "정보 없음"
-    ai_html = "".join(f"<p style=\"margin:0 0 8px\">{e(line)}</p>" for line in ai_text.split("\n") if line.strip())
+    # AI 요약 표: 관점 | 확인된 내용 | 근거 사업 | 참고·확인할 점. 근거 번호는 아래 비교표의 # 열과 같다
+    ai_rows = "".join(
+        f'<tr><td style="{TD};font-weight:700;color:#111;white-space:nowrap">{e(r["aspect"])}</td>'
+        f'<td style="{TD}">{e(r["finding"])}</td>'
+        f'<td style="{TD};white-space:nowrap;color:#0032ff;font-weight:700">{", ".join(f"[{n}]" for n in r["refs"]) or "-"}</td>'
+        f'<td style="{TD}">{e(r["note"]) or "-"}</td></tr>'
+        for r in ai_text
+    )
+    ai_html = (f'<table style="border-collapse:collapse;font-size:13px;width:100%"><tr><th style="{TH}">관점</th>'
+               f'<th style="{TH}">확인된 내용</th><th style="{TH}">근거 사업</th><th style="{TH}">참고·확인할 점</th></tr>{ai_rows}</table>')
     lead = ""
     if for_operator:
         lead = (f'<h2 style="{H2}">문의자 정보</h2><table style="border-collapse:collapse;font-size:14px">'
@@ -204,7 +241,7 @@ def render(form, projects, summary, ai_text, for_operator=False):
 {greeting}{lead}
 <h2 style="{H2}">요청하신 내용</h2><p style="white-space:pre-wrap;background:#f3f6ff;padding:10px 12px;border-radius:4px">{e(form["needs"])}</p>
 <h2 style="{H2}">AI 요약</h2>{ai_html}
-<p style="font-size:12px;color:#8a8a8a">위 요약은 AI가 아래 표의 정보만으로 작성했습니다. [번호]는 표의 사업 번호입니다. 판단 전에 원문을 확인해 주세요.</p>
+<p style="font-size:12px;color:#8a8a8a">위 표는 AI가 아래 사업별 비교표의 정보만으로 작성했습니다. 근거 사업의 [번호]는 비교표의 # 열과 같습니다. 판단 전에 원문을 확인해 주세요.</p>
 <h2 style="{H2}">한눈에 보기</h2><p>사업 {summary["count"]}건 · 발주 예정 {e(summary["period"])} · 발주금액 {won(summary["amount_min"])} ~ {won(summary["amount_max"])} (중간 {won(summary["amount_median"])})<br>
 실제 공고 연결 {summary["with_notice"]}건 (취소 {summary["cancelled"]}건) · 계약방법 {e(methods)}</p>
 <h2 style="{H2}">사업별 비교</h2>
