@@ -8,7 +8,8 @@
 
 Secret key는 RLS를 건너뛰므로 서버 환경변수에만 둔다. 새 형식 키는 JWT가 아니라서
 Authorization: Bearer가 아니라 apikey 헤더에만 싣는다(Supabase 새 API 키 안내).
-테이블과 함수는 supabase/schema.sql. 마지막 이용일로부터 1년이 지난 리드는 등록 함수가 지운다.
+테이블과 함수는 supabase/schema.sql. 마지막 신청일로부터 1년이 지난 리드는 매일 purge()가
+(Vercel Cron → /api/purge), 그리고 신청이 들어올 때 등록 함수가 지운다.
 """
 
 import json
@@ -44,7 +45,24 @@ def _rpc(name, args):
         return json.load(response)
 
 
-def _file_register(email, name, org, kind, ids, query, needs):
+def purge():
+    """보유 기간이 지난 신청자를 지우고 지운 수를 돌려준다. 저장소가 없으면 0"""
+    store = backend()
+    if store == "supabase":
+        return int(_rpc("purge_expired_leads", {}) or 0)
+    if store == "file" and LOCAL.exists():
+        data = json.loads(LOCAL.read_text(encoding="utf-8"))
+        now = time.time()
+        expired = [k for k, v in data["leads"].items() if now - v["last_seen"] > RETENTION_SEC]
+        for k in expired:
+            del data["leads"][k]
+        data["requests"] = [r for r in data["requests"] if r["email"] not in expired]
+        LOCAL.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        return len(expired)
+    return 0
+
+
+def _file_register(email, org, marketing, kind, ids, query, needs):
     data = json.loads(LOCAL.read_text(encoding="utf-8")) if LOCAL.exists() else {"leads": {}, "requests": []}
     now = time.time()
     expired = [k for k, v in data["leads"].items() if now - v["last_seen"] > RETENTION_SEC]
@@ -54,8 +72,8 @@ def _file_register(email, name, org, kind, ids, query, needs):
     lead = data["leads"].get(email)
     is_new = lead is None
     if is_new:
-        lead = data["leads"][email] = {"name": name, "org": org, "first_seen": now, "visits": 0}
-    lead.update(name=name, org=org, last_seen=now, visits=lead["visits"] + 1)
+        lead = data["leads"][email] = {"org": org, "first_seen": now, "visits": 0}
+    lead.update(org=org, marketing_opt_in=bool(marketing), last_seen=now, visits=lead["visits"] + 1)
     data["requests"].append({"email": email, "kind": kind, "ids": ids, "query": query, "needs": needs,
                              "created_at": now})
     LOCAL.parent.mkdir(parents=True, exist_ok=True)
@@ -63,19 +81,21 @@ def _file_register(email, name, org, kind, ids, query, needs):
     return {"is_new": is_new, "visits": lead["visits"]}
 
 
-def register(email, name, org, kind, ids, query, needs):
+def register(email, org, marketing, kind, ids, query, needs):
     """신청을 기록하고 {"is_new", "visits"}를 돌려준다. 저장소가 없으면 None.
+
+    이름은 받지 않는다(최소 수집). marketing: 홍보 안내 수신 동의(선택). 마지막 신청의 선택으로 덮어쓴다
 
     kind: "map"(전국 공공 AX 지도 요약) 또는 "report"(고른 사업 비교 리포트). 신청자가 고른 그대로 기록한다
     """
     email = email.strip().lower()
     store = backend()
     if store == "file":
-        return _file_register(email, name, org, kind, ids, query, needs)
+        return _file_register(email, org, marketing, kind, ids, query, needs)
     if store != "supabase":
         return None
     # 한 번의 호출로 조회·등록·방문 수 갱신을 묶는다. 동시에 두 번 눌러도 신규는 한 번만 잡힌다
-    row = _rpc("register_lead", {"p_email": email, "p_name": name, "p_org": org})
+    row = _rpc("register_lead", {"p_email": email, "p_org": org, "p_marketing": bool(marketing)})
     row = row[0] if isinstance(row, list) else row
     _rpc("log_lead_request", {"p_lead": row["lead_id"], "p_kind": kind, "p_ids": ids,
                               "p_query": query, "p_needs": needs})

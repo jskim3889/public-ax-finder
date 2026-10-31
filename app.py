@@ -3,11 +3,13 @@
 브라우저에는 키를 두지 않는다. 브라우저는 질의 문장만 보내고, 임베딩 호출은 이 서버가 한다 (7강 #14).
 """
 
+import hmac
 import urllib.error
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+import leads
 import report
 import search_core
 
@@ -21,6 +23,11 @@ app = Flask(__name__, static_folder=None)
 @app.get("/")
 def index():
     return send_from_directory(PUBLIC_DIR, "index.html")
+
+
+@app.get("/privacy.html")
+def privacy_page():
+    return send_from_directory(PUBLIC_DIR, "privacy.html")
 
 
 @app.post("/api/search")
@@ -63,7 +70,22 @@ def api_search():
 @app.get("/api/config")
 def api_config():
     # 리포트 메일 기능은 운영사 배포본에서만 켠다 (LEAD_FORM_ENABLED=1)
-    return jsonify(lead_form=report.enabled(), operator=report.operator(), max_projects=report.MAX_PROJECTS)
+    return jsonify(lead_form=report.enabled(), operator=report.operator(), max_projects=report.MAX_PROJECTS,
+                   privacy=report.privacy())
+
+
+@app.get("/api/purge")
+def api_purge():
+    # Vercel Cron이 하루 한 번 부른다(vercel.json). Vercel은 CRON_SECRET을 Authorization: Bearer로 실어 보낸다.
+    # 비밀값이 설정되지 않았으면 아무도 부를 수 없게 막는다
+    secret = search_core.env("CRON_SECRET")
+    given = request.headers.get("Authorization", "")
+    if not secret or not hmac.compare_digest(given, f"Bearer {secret}"):
+        return jsonify(error="unauthorized"), 401
+    try:
+        return jsonify(deleted=leads.purge())
+    except (OSError, ValueError):
+        return jsonify(error="purge failed"), 502
 
 
 @app.post("/api/report")

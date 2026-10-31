@@ -43,7 +43,8 @@ MAP_URL = os.environ.get("MAP_URL", "https://jskim3889.github.io/ax-map/")
 SITE_URL = os.environ.get("SITE_URL", "https://public-ax-finder.vercel.app")
 KINDS = ("map", "report")
 MAX_PROJECTS = 10
-LIMITS = {"name": 40, "org": 80, "email": 120, "needs": 1000}
+# 이름은 받지 않는다. 자료 발송·회신에는 이메일과 소속이면 충분하고, 이름까지 모으면 식별 위험만 커진다
+LIMITS = {"org": 80, "email": 120, "needs": 1000}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # 같은 인스턴스 안에서만 세는 간단한 횟수 제한. 서버리스는 인스턴스가 바뀌면 초기화된다
@@ -64,6 +65,18 @@ def operator():
     return os.environ.get("OPERATOR_NAME", "").strip()
 
 
+def privacy():
+    """개인정보 처리방침 화면(public/privacy.html)에 채울 운영 정보. 비밀값은 넣지 않는다"""
+    host = (env("SMTP_HOST") or "smtp.gmail.com").lower()
+    mail = "hiworks" if "hiworks" in host else "gmail" if "gmail" in host else "other"
+    return {
+        "officer": os.environ.get("PRIVACY_OFFICER", "").strip(),   # 개인정보 보호책임자 (성명 또는 직책·부서)
+        "contact": os.environ.get("PRIVACY_CONTACT", "").strip(),   # 열람·삭제 요청을 받을 메일 주소
+        "mail": mail,
+        "store": leads.backend() == "supabase",
+    }
+
+
 env = search_core.env
 
 
@@ -82,15 +95,19 @@ def validate(body):
     # 모든 칸이 필수다. 공백만 넣은 값도 빈칸으로 본다 (화면도 같은 규칙으로 막는다)
     form = {k: " ".join(str(body.get(k, "")).split()) if k != "needs" else str(body.get(k, "")).strip()
             for k in LIMITS}
-    for key, label in (("name", "담당자명"), ("org", "소속"), ("email", "이메일"), ("needs", "필요사항")):
+    for key, label in (("org", "소속"), ("email", "이메일"), ("needs", "필요사항")):
         if not form[key]:
             raise ReportError(f"{label}을 입력해 주세요.")
         if len(form[key]) > LIMITS[key]:
             raise ReportError(f"{label}은 {LIMITS[key]}자 이내로 입력해 주세요.")
     if not EMAIL_RE.match(form["email"]):
         raise ReportError("이메일 주소 형식을 확인해 주세요.")
+    # 동의는 항목마다 따로 받는다(개인정보보호법 제22조). 수집·이용과 국외 이전은 필수, 홍보 안내 수신은 선택
     if body.get("consent") is not True:
         raise ReportError("개인정보 수집·이용에 동의해야 자료를 받으실 수 있습니다.")
+    if body.get("transfer_consent") is not True:
+        raise ReportError("개인정보 국외 이전에 동의해야 자료를 받으실 수 있습니다.")
+    form["marketing"] = body.get("marketing") is True
     form["kind"] = str(body.get("kind", ""))
     if form["kind"] not in KINDS:
         raise ReportError("받으실 자료를 골라 주세요.")
@@ -236,7 +253,7 @@ def render(form, projects, summary, ai_text, lead=None):
     ai_html = (f'<table style="border-collapse:collapse;font-size:13px;width:100%"><tr><th style="{TH}">관점</th>'
                f'<th style="{TH}">확인된 내용</th><th style="{TH}">근거 사업</th><th style="{TH}">참고·확인할 점</th></tr>{ai_rows}</table>')
     lead_html = lead_table(form, lead) if lead else ""
-    greeting = "" if lead else f'<p>{e(form["name"])}님, 요청하신 공공 AI 사업 비교 분석 리포트입니다.</p>'
+    greeting = "" if lead else '<p>담당자님, 요청하신 공공 AI 사업 비교 분석 리포트입니다.</p>'
     op = e(operator() or "운영사")
     return f"""<div style="font-family:Pretendard,'Malgun Gothic',sans-serif;color:#303030;max-width:760px;margin:0 auto;background:#ffffff">
 <div style="border-bottom:2px solid #0032ff;padding:16px 0;margin-bottom:16px"><div style="font-size:20px;font-weight:800;color:#111">공공 AI 사업 비교 분석 리포트</div>
@@ -369,7 +386,7 @@ def render_map(form, near, lead=None):
                      f'<p style="{NOTE}">사업명과 필요사항 문장의 의미가 가까운 순서입니다. 우리 기관에 맞는다는 뜻은 아닙니다.</p>')
 
     greeting = "" if lead else (
-        f'<p>{e(form["name"])}님, 신청해 주셔서 감사합니다. 나라장터에 올라온 공공기관 AI 관련 용역 발주계획 {total:,}건을 '
+        f'<p>담당자님, 신청해 주셔서 감사합니다. 나라장터에 올라온 공공기관 AI 관련 용역 발주계획 {total:,}건을 '
         f'정리한 전국 공공 AX 지도 요약을 보내 드립니다.</p>')
     op = e(operator() or "운영사")
     return f"""<div style="font-family:Pretendard,'Malgun Gothic',sans-serif;color:#303030;max-width:760px;margin:0 auto;background:#ffffff">
@@ -399,7 +416,8 @@ def lead_table(form, lead):
     else:
         status = "신규" if lead["is_new"] else f'재방문 ({lead["visits"]}번째 신청)'
     sent = "전국 공공 AX 지도 요약" if lead["kind"] == "map" else "비교 분석 리포트"
-    cells = (("구분", status), ("보낸 자료", sent), ("담당자명", form["name"]), ("소속", form["org"]),
+    marketing = "동의" if form["marketing"] else "동의 안 함 (요청 회신·상담 외 홍보 메일 금지)"
+    cells = (("구분", status), ("보낸 자료", sent), ("홍보 안내 수신", marketing), ("소속", form["org"]),
              ("이메일", form["email"]), ("검색어", form["query"]), ("필요사항", form["needs"]))
     rows = "".join(f'<tr><td style="{TD};white-space:nowrap">{k}</td><td style="{TD};white-space:pre-wrap">{e(v)}</td></tr>'
                    for k, v in cells)
@@ -411,7 +429,7 @@ def handle(body, ip):
     check_rate(ip, form["email"])
     picked = collect(form["ids"]) if form["kind"] == "report" else []
     try:
-        lead = leads.register(form["email"], form["name"], form["org"], form["kind"], form["ids"],
+        lead = leads.register(form["email"], form["org"], form["marketing"], form["kind"], form["ids"],
                               form["query"], form["needs"])
     except (OSError, ValueError, KeyError, IndexError):
         # 저장소 장애(URLError 포함)로 신청을 버리지 않는다. 기록만 빠지고 메일은 보낸다
@@ -424,7 +442,7 @@ def handle(body, ip):
         subject = "[전국 공공 AX 지도] 공공기관 AI 사업 현황 요약"
         send(form["email"], subject, render_map(form, near), lead_to)
         if lead_to:
-            send(lead_to, f"[리드·{tag}] {form['org']} {form['name']} · 지도 발송",
+            send(lead_to, f"[리드·{tag}] {form['org']} · 지도 발송",
                  render_map(form, near, lead=lead), form["email"])
     else:
         summary = stats(picked)
@@ -433,6 +451,6 @@ def handle(body, ip):
             else f"[공공 AI 사업 비교 리포트] {picked[0]['name'][:40]}"
         send(form["email"], subject, render(form, picked, summary, ai_text), lead_to)
         if lead_to:
-            send(lead_to, f"[리드·{tag}] {form['org']} {form['name']} · {subject}",
+            send(lead_to, f"[리드·{tag}] {form['org']} · {subject}",
                  render(form, picked, summary, ai_text, lead=lead), form["email"])
     return {"ok": True, "kind": form["kind"]}

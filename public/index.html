@@ -88,6 +88,7 @@
   .dlg-msg { margin: 0; font-size: 13px; min-height: 18px; }
   .req { color: var(--warn); margin-left: 2px; }
   .req-note { margin: 0; font-size: 12px; color: var(--muted); }
+  .field-hint { font-size: 12px; font-weight: 400; color: var(--muted); }
   .field-err { font-size: 12px; font-weight: 400; color: var(--warn); min-height: 0; }
   .field-err:empty { display: none; }
   #reportForm input[aria-invalid="true"], #reportForm textarea[aria-invalid="true"] { border-color: var(--warn); }
@@ -103,6 +104,7 @@
   .notice-box a { color: var(--brand); font-weight: 600; }
   .notice-box .files { margin-top: 2px; color: var(--muted); }
   .notice-box .files a { font-weight: 400; color: var(--brand-deep); }
+  .privacy-link { color: var(--brand); font-weight: 700; }
   footer { color: var(--muted); font-size: 12px; margin-top: 22px; padding-top: 12px; border-top: 2px solid var(--brand); }
 </style>
 </head>
@@ -143,7 +145,7 @@
   <div class="notice">
     검색 결과는 AI 임베딩으로 사업명의 의미가 가까운 순서를 보여 드린 것입니다. 발주계획은 사전 계획이라 실제 입찰공고·계약과 다를 수 있습니다. 사업명만으로 찾기 때문에 사업 내용이 비슷해도 이름이 다르면 놓칠 수 있습니다. 원문은 각 사업의 나라장터 링크에서 확인해 주세요.
   </div>
-  <footer>데이터: 조달청 나라장터 발주계획현황서비스(공공데이터포털 15129462), 실제 공고는 나라장터 입찰공고정보서비스(15129394)의 용역 공고를 발주계획의 공고번호로 연결했습니다. 담당자 이름·연락처와 업체가 제출한 서류는 싣지 않았습니다. <span id="owner-note">KAIST ITM.690 수업 과제로 만든 정보 제공용 페이지입니다.</span></footer>
+  <footer>데이터: 조달청 나라장터 발주계획현황서비스(공공데이터포털 15129462), 실제 공고는 나라장터 입찰공고정보서비스(15129394)의 용역 공고를 발주계획의 공고번호로 연결했습니다. 담당자 이름·연락처와 업체가 제출한 서류는 싣지 않았습니다. <span id="owner-note">KAIST ITM.690 수업 과제로 만든 정보 제공용 페이지입니다.</span> <a href="/privacy.html" class="privacy-link">개인정보 처리방침</a></footer>
 </main>
 
 <!-- 비교 리포트 메일 받기: 운영사 배포본에서만 보인다 (/api/config 의 lead_form) -->
@@ -159,24 +161,43 @@
     <p class="dlg-lead" id="dlgLead"></p>
     <ul id="dlgList" class="dlg-list"></ul>
     <p class="req-note"><span class="req">*</span> 표시는 모두 입력해야 보내 드릴 수 있습니다.</p>
-    <label><span>담당자명<span class="req">*</span></span> <input name="name" maxlength="40" required aria-required="true" autocomplete="name"><span class="field-err" data-for="name"></span></label>
     <label><span>소속 (기관·부서)<span class="req">*</span></span> <input name="org" maxlength="80" required aria-required="true" autocomplete="organization"><span class="field-err" data-for="org"></span></label>
     <label><span>이메일<span class="req">*</span></span> <input name="email" type="email" maxlength="120" required aria-required="true" autocomplete="email"><span class="field-err" data-for="email"></span></label>
-    <label><span>필요사항<span class="req">*</span></span> <textarea name="needs" maxlength="1000" rows="4" required aria-required="true" placeholder="예: 내년 민원 챗봇 도입을 검토 중입니다. 비슷한 기관의 예산 규모와 발주 방식을 알고 싶습니다."></textarea><span class="field-err" data-for="needs"></span></label>
+    <label><span>필요사항<span class="req">*</span></span> <textarea name="needs" maxlength="1000" rows="4" required aria-required="true" placeholder="예: 내년 민원 챗봇 도입을 검토 중입니다. 비슷한 기관의 예산 규모와 발주 방식을 알고 싶습니다."></textarea><span class="field-hint">이름·연락처·주민등록번호 같은 개인정보, 건강 정보 같은 민감정보, 기관 내부 비공개 정보는 적지 마세요. 필요사항은 외부 AI 서비스로 전송됩니다.</span><span class="field-err" data-for="needs"></span></label>
     <input name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+    <p class="req-note">이름은 받지 않습니다. 회신이 필요하면 입력하신 이메일로 연락드립니다.</p>
     <div class="consent">
-      <p><b>개인정보 수집·이용 안내</b> (<span class="opname">운영사</span>)</p>
+      <p><b>[필수] 개인정보 수집·이용 동의</b> (<span class="opname">운영사</span>)</p>
       <ul>
-        <li>수집 항목: 담당자명, 소속, 이메일, 필요사항</li>
-        <li>목적: 자료(전국 공공 AX 지도 요약, 비교 분석 리포트) 발송, 요청하신 내용에 대한 회신·상담</li>
-        <li>보유 기간: 마지막 신청일로부터 1년 뒤 자동 삭제</li>
+        <li>수집 항목: 소속, 이메일, 필요사항, 신청 기록(받은 자료 종류, 담은 사업, 검색어)</li>
+        <li>목적: 요청하신 자료(전국 공공 AX 지도 요약, 비교 분석 리포트) 발송, 요청 내용에 대한 회신·상담</li>
+        <li>보유 기간: 마지막 신청일로부터 1년. 기간이 지나면 지체 없이 파기합니다.</li>
         <li>동의를 거부하실 수 있으며, 거부하시면 자료를 받으실 수 없습니다.</li>
-        <li>담당자명·소속·이메일과 신청 기록(담은 사업, 검색어, 필요사항)은 운영사 데이터베이스(Supabase)에 저장되고, 같은 내용이 운영사 메일로 전달됩니다. 필요사항은 관련 사업 검색과 AI 요약을 위해 외부 AI 서비스(OpenRouter)로 전송됩니다.</li>
       </ul>
-      <label class="check"><input type="checkbox" name="consent" required aria-required="true"> 위 내용에 동의합니다<span class="req">*</span></label>
+      <label class="check"><input type="checkbox" name="consent" required aria-required="true"> 개인정보 수집·이용에 동의합니다<span class="req">*</span></label>
       <span class="field-err" data-for="consent"></span>
     </div>
-    <label class="check"><input type="checkbox" name="remember"> 이 브라우저에 담당자명·소속·이메일 기억하기 (선택)</label>
+    <div class="consent">
+      <p><b>[필수] 개인정보 국외 이전 동의</b></p>
+      <ul>
+        <li>OpenRouter, Inc. (미국, openrouter.ai): 필요사항·검색어를 신청 시 네트워크로 전송합니다. 관련 사업 검색과 AI 요약에 쓰이며, OpenRouter는 요청 내용을 저장하지 않고 처리 후 지웁니다(이용량 기록만 보관).</li>
+        <li class="mail-gmail" hidden>Google LLC (미국, Gmail): 이메일·소속·필요사항과 보내 드리는 자료 내용이 메일 발송 시 전송됩니다. 운영사 메일함 사본은 마지막 신청일로부터 1년 뒤 삭제합니다.</li>
+        <li>거부하실 수 있으며, 거부하시면 자료를 만들 수 없어 받으실 수 없습니다.</li>
+      </ul>
+      <label class="check"><input type="checkbox" name="transfer_consent" required aria-required="true"> 개인정보 국외 이전에 동의합니다<span class="req">*</span></label>
+      <span class="field-err" data-for="transfer_consent"></span>
+    </div>
+    <div class="consent">
+      <p><b>[선택] 홍보·안내 메일 수신 동의</b></p>
+      <ul>
+        <li>운영사의 공공 AI 사업 관련 서비스 소개, 세미나·자료 안내를 이메일로 보내 드립니다. 이용 항목: 이메일, 소속</li>
+        <li>보유 기간: 동의를 철회하시거나 마지막 신청일로부터 1년이 지날 때까지</li>
+        <li>동의하지 않으셔도 자료를 받는 데 불이익이 없습니다. 철회는 다음 신청 때 체크를 풀거나 처리방침의 연락처로 요청하시면 됩니다.</li>
+      </ul>
+      <label class="check"><input type="checkbox" name="marketing"> 홍보·안내 메일 수신에 동의합니다 (선택)</label>
+    </div>
+    <p class="req-note"><a href="/privacy.html" target="_blank" rel="noopener">개인정보 처리방침 전문 보기</a></p>
+    <label class="check"><input type="checkbox" name="remember"> 이 브라우저에 소속·이메일 기억하기 (선택)</label>
     <p id="dlgMsg" class="dlg-msg" aria-live="polite"></p>
     <div class="dlg-actions">
       <button type="button" id="dlgCancel" class="ghost">닫기</button>
@@ -279,11 +300,11 @@
   // 필수 입력 검사. 서버(report.validate)도 같은 규칙으로 다시 막는다
   const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
   const RULES = {
-    name: (v) => v.trim() ? "" : "담당자명을 입력해 주세요.",
     org: (v) => v.trim() ? "" : "소속을 입력해 주세요.",
     email: (v) => !v.trim() ? "이메일을 입력해 주세요." : EMAIL_RE.test(v.trim()) ? "" : "이메일 주소 형식을 확인해 주세요. (예: name@agency.go.kr)",
     needs: (v) => v.trim() ? "" : "필요사항을 입력해 주세요.",
     consent: (_, el) => el.checked ? "" : "개인정보 수집·이용에 동의해 주세요.",
+    transfer_consent: (_, el) => el.checked ? "" : "개인정보 국외 이전에 동의해 주세요.",
   };
   const touched = new Set();
 
@@ -317,7 +338,7 @@
     try {
       const saved = JSON.parse(localStorage.getItem(REMEMBER_KEY) || "null");
       if (saved) {
-        ["name", "org", "email"].forEach((k) => { if (!f[k].value) f[k].value = saved[k] || ""; });
+        ["org", "email"].forEach((k) => { if (!f[k].value) f[k].value = saved[k] || ""; });
         f.remember.checked = true;
       }
     } catch (_) { /* 저장소를 못 쓰는 브라우저는 빈 칸으로 시작한다 */ }
@@ -353,14 +374,15 @@
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
         body: JSON.stringify({
           kind, ids: kind === "report" ? [...lead.picked.keys()] : [], query: current.query,
-          name: f.name.value, org: f.org.value, email: f.email.value, needs: f.needs.value,
+          org: f.org.value, email: f.email.value, needs: f.needs.value,
           website: f.website.value, consent: f.consent.checked,
+          transfer_consent: f.transfer_consent.checked, marketing: f.marketing.checked,
         }),
       });
       const data = await res.json().catch(() => ({ error: `서버 응답을 읽지 못했습니다 (HTTP ${res.status}).` }));
       if (!res.ok) throw new Error(data.error || "메일을 보내지 못했습니다.");
       try {
-        if (f.remember.checked) localStorage.setItem(REMEMBER_KEY, JSON.stringify({ name: f.name.value, org: f.org.value, email: f.email.value }));
+        if (f.remember.checked) localStorage.setItem(REMEMBER_KEY, JSON.stringify({ org: f.org.value, email: f.email.value }));
         else localStorage.removeItem(REMEMBER_KEY);
       } catch (_) { /* 기억하기는 편의 기능이라 실패해도 넘어간다 */ }
       msg.className = "dlg-msg ok";
@@ -380,6 +402,8 @@
     lead.on = !!c.lead_form;
     lead.max = c.max_projects || 10;
     $("mapOffer").hidden = !lead.on;
+    // 메일 발송을 Gmail로 할 때만 Google(미국)을 국외 이전 대상으로 보인다. 하이웍스는 국내
+    document.querySelectorAll(".mail-gmail").forEach((el) => { el.hidden = (c.privacy || {}).mail !== "gmail"; });
     if (lead.on && c.operator) {
       document.querySelectorAll(".opname").forEach((el) => { el.textContent = c.operator; });
       $("owner-note").textContent = `운영: ${c.operator}`;
