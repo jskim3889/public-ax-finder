@@ -35,15 +35,23 @@ PAGE_SIZE = 10
 MAX_CARDS = 100
 
 
-def api_key():
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if key:
-        return key
+def env(name):
+    """환경변수, 없으면 로컬 ~/.ghost-alice/secrets.env의 같은 이름. 둘 다 없으면 빈 문자열"""
+    value = os.environ.get(name)
+    if value:
+        return value.strip()
     secrets = Path.home() / ".ghost-alice" / "secrets.env"
     if secrets.exists():
-        for line in secrets.read_text(encoding="utf-8").splitlines():
-            if line.startswith("OPENROUTER_API_KEY="):
+        for line in secrets.read_text(encoding="utf-8-sig").splitlines():
+            if line.startswith(name + "="):
                 return line.split("=", 1)[1].strip()
+    return ""
+
+
+def api_key():
+    key = env("OPENROUTER_API_KEY")
+    if key:
+        return key
     raise RuntimeError("OPENROUTER_API_KEY 환경변수가 없습니다")
 
 

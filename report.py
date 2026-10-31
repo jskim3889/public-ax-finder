@@ -1,6 +1,9 @@
-"""고른 사업들의 비교 분석 리포트를 만들어 메일로 보낸다 (운영사 부가서비스용).
+"""신청자에게 자료를 메일로 보낸다 (운영사 부가서비스용).
 
-환경변수로 켜고 끈다. 과제 배포본에서는 꺼 둔다. 운영사 정보·메일 계정은 저장소에 두지 않는다.
+처음 신청한 이메일에는 전국 공공 AX 지도 요약을, 다시 신청한 이메일이 사업을 담았으면
+그 사업들의 비교 분석 리포트를 보낸다. 첫 신청 여부는 leads.py가 판단하고 화면에는 알리지 않는다.
+
+환경변수로 켜고 끈다. 운영사 정보·메일 계정·DB 키는 저장소에 두지 않는다.
     LEAD_FORM_ENABLED=1        기능 켜기
     OPERATOR_NAME              화면·메일에 밝힐 운영사 이름
     LEAD_TO                    문의를 받을 운영사 메일 주소
@@ -8,8 +11,10 @@
     SMTP_HOST, SMTP_PORT       발송 서버 (기본 smtp.gmail.com:465, 하이웍스는 smtps.hiworks.com:465, 둘 다 SSL)
     REPORT_MODEL               AI 요약 모델 (기본 anthropic/claude-haiku-5.5)
     MAIL_DRY_RUN=1             메일을 보내지 않고 cache/outbox/에 .eml로 남긴다 (로컬 시험)
+    SITE_URL                   지도 메일에 넣을 검색 화면 주소 (기본 과제 배포 주소)
+    SUPABASE_URL, SUPABASE_KEY 신청자 저장소 (leads.py). 없으면 첫 신청 여부를 가리지 않는다
 
-이용자가 입력한 개인정보는 서버에 저장하지 않는다. 메일 두 통(이용자, 운영사)으로만 전달한다.
+신청자 정보(이름·소속·이메일)와 신청 기록은 Supabase에 두고, 마지막 이용일로부터 1년 뒤 지운다.
 """
 
 import html
@@ -22,13 +27,17 @@ import time
 import urllib.request
 from email.message import EmailMessage
 from email.utils import formataddr
+from functools import lru_cache
 from pathlib import Path
 
+import leads
 import search_core
 
 ROOT = Path(__file__).resolve().parent
 OUTBOX = ROOT / "cache" / "outbox"
 CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+MAP_URL = "https://jskim3889.github.io/ax-map/"
+SITE_URL = os.environ.get("SITE_URL", "https://public-ax-finder.vercel.app")
 MAX_PROJECTS = 10
 LIMITS = {"name": 40, "org": 80, "email": 120, "needs": 1000}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -51,16 +60,7 @@ def operator():
     return os.environ.get("OPERATOR_NAME", "").strip()
 
 
-def env(name):
-    value = os.environ.get(name)
-    if value:
-        return value.strip()
-    secrets = Path.home() / ".ghost-alice" / "secrets.env"
-    if secrets.exists():
-        for line in secrets.read_text(encoding="utf-8-sig").splitlines():
-            if line.startswith(name + "="):
-                return line.split("=", 1)[1].strip()
-    return ""
+env = search_core.env
 
 
 def check_rate(ip, email):
@@ -84,11 +84,9 @@ def validate(body):
     if not EMAIL_RE.match(form["email"]):
         raise ReportError("이메일 주소 형식을 확인해 주세요.")
     if body.get("consent") is not True:
-        raise ReportError("개인정보 수집·이용에 동의해야 리포트를 받을 수 있습니다.")
-    ids = [str(i) for i in body.get("ids") or []][:MAX_PROJECTS]
-    if not ids:
-        raise ReportError("비교할 사업을 1건 이상 담아 주세요.")
-    form["ids"] = ids
+        raise ReportError("개인정보 수집·이용에 동의해야 자료를 받으실 수 있습니다.")
+    # 담은 사업이 없어도 신청할 수 있다. 그때는 전국 공공 AX 지도 요약을 보낸다
+    form["ids"] = [str(i) for i in body.get("ids") or []][:MAX_PROJECTS]
     form["query"] = str(body.get("query", ""))[: search_core.MAX_QUERY_CHARS]
     return form
 
@@ -195,11 +193,11 @@ def won(n):
     if not n:
         return "금액 미상"
     if n >= 1e8:
-        return f"{n / 1e8:.1f}".rstrip("0").rstrip(".") + "억 원"
+        return f"{n / 1e8:,.1f}".rstrip("0").rstrip(".") + "억 원"
     return f"{round(n / 1e4):,}만 원"
 
 
-def render(form, projects, summary, ai_text, for_operator=False):
+def render(form, projects, summary, ai_text, lead=None):
     e = html.escape
     rows = []
     for i, p in enumerate(projects, 1):
@@ -227,19 +225,13 @@ def render(form, projects, summary, ai_text, for_operator=False):
     )
     ai_html = (f'<table style="border-collapse:collapse;font-size:13px;width:100%"><tr><th style="{TH}">관점</th>'
                f'<th style="{TH}">확인된 내용</th><th style="{TH}">근거 사업</th><th style="{TH}">참고·확인할 점</th></tr>{ai_rows}</table>')
-    lead = ""
-    if for_operator:
-        lead = (f'<h2 style="{H2}">문의자 정보</h2><table style="border-collapse:collapse;font-size:14px">'
-                f'<tr><td style="{TD}">담당자명</td><td style="{TD}">{e(form["name"])}</td></tr>'
-                f'<tr><td style="{TD}">소속</td><td style="{TD}">{e(form["org"])}</td></tr>'
-                f'<tr><td style="{TD}">이메일</td><td style="{TD}">{e(form["email"])}</td></tr>'
-                f'<tr><td style="{TD}">검색어</td><td style="{TD}">{e(form["query"])}</td></tr></table>')
-    greeting = "" if for_operator else f'<p>{e(form["name"])}님, 요청하신 공공 AI 사업 비교 분석 리포트입니다.</p>'
+    lead_html = lead_table(form, lead) if lead else ""
+    greeting = "" if lead else f'<p>{e(form["name"])}님, 요청하신 공공 AI 사업 비교 분석 리포트입니다.</p>'
     op = e(operator() or "운영사")
     return f"""<div style="font-family:Pretendard,'Malgun Gothic',sans-serif;color:#303030;max-width:760px;margin:0 auto;background:#ffffff">
 <div style="border-bottom:2px solid #0032ff;padding:16px 0;margin-bottom:16px"><div style="font-size:20px;font-weight:800;color:#111">공공 AI 사업 비교 분석 리포트</div>
 <div style="font-size:12px;color:#0032ff;font-weight:700">{op} · 공공 AX 사례 찾기</div></div>
-{greeting}{lead}
+{greeting}{lead_html}
 <h2 style="{H2}">요청하신 내용</h2><p style="white-space:pre-wrap;background:#f3f6ff;padding:10px 12px;border-radius:4px">{e(form["needs"])}</p>
 <h2 style="{H2}">AI 요약</h2>{ai_html}
 <p style="font-size:12px;color:#8a8a8a">위 표는 AI가 아래 사업별 비교표의 정보만으로 작성했습니다. 근거 사업의 [번호]는 비교표의 # 열과 같습니다. 판단 전에 원문을 확인해 주세요.</p>
@@ -285,17 +277,161 @@ def send(to, subject, html_body, reply_to):
     return "sent"
 
 
+@lru_cache(maxsize=1)
+def insights():
+    """전국 공공 AX 지도 집계 (build_insights.py 결과)"""
+    return json.loads((ROOT / "data" / "insights.json").read_text(encoding="utf-8"))
+
+
+def find_region(org):
+    """소속 이름에서 시·도를 추정한다. 못 찾으면 빈 문자열"""
+    for region, names in insights()["region_names"].items():
+        if any(n in org for n in names):
+            return region
+    return ""
+
+
+def near_needs(needs, count=3):
+    """필요사항과 사업명이 가까운 사업. 임베딩 서비스가 늦거나 실패하면 메일에서 이 부분만 뺀다"""
+    try:
+        return search_core.search_page(needs, limit=count)["hits"]
+    except Exception:  # noqa: BLE001 - 지도 메일은 이 부분 없이도 보낸다
+        return []
+
+
+def pct(n, total):
+    return f"{round(n / total * 100) if total else 0}%"
+
+
+def trend(years):
+    return f'{years.get("2024", 0):,} → {years.get("2025", 0):,} → {years.get("2026", 0):,}'
+
+
+def table(head, rows):
+    th = "".join(f'<th style="{TH}">{h}</th>' for h in head)
+    return f'<table style="border-collapse:collapse;font-size:13px;width:100%"><tr>{th}</tr>{rows}</table>'
+
+
+def render_map(form, picked, near, lead=None):
+    """첫 신청자에게 보내는 전국 공공 AX 지도 요약. lead가 있으면 운영사용(문의자 정보 포함)"""
+    e = html.escape
+    d = insights()
+    total = d["total"]
+    years = {y: sum(g["years"].get(y, 0) for g in d["groups"]) for y in ("2024", "2025", "2026")}
+    num = f"{TD};text-align:right;white-space:nowrap"
+    groups = "".join(
+        f'<tr><td style="{TD}">{e(g["label"])}</td><td style="{num}">{g["count"]:,}건 ({pct(g["count"], total)})</td>'
+        f'<td style="{num}">{won(g["amount"])}</td><td style="{TD}">{trend(g["years"])}</td></tr>'
+        for g in d["groups"])
+    clusters = "".join(
+        f'<tr><td style="{TD}">{e(c["name"])}<br><span style="color:#8a8a8a">{e(c["group"])}</span></td>'
+        f'<td style="{num}">{c["count"]:,}건</td><td style="{num}">{won(c["amount"])}</td>'
+        f'<td style="{TD}">{trend(c["years"])}</td></tr>'
+        for c in d["clusters"][:5])
+    rising = "".join(
+        f'<tr><td style="{TD};font-weight:700;color:#111">{e(w["word"])}</td>'
+        f'<td style="{num}">{w["count"]}건 · {w["insts"]}개 기관</td><td style="{TD}">{e(w["example"])}</td></tr>'
+        for w in d["rising"][:5])
+
+    region_html = ""
+    region = find_region(form["org"])
+    if region:
+        r = d["regions"][region]
+        nat = {g["label"]: g["count"] for g in d["groups"]}
+        rows = "".join(
+            f'<tr><td style="{TD}">{e(label)}</td><td style="{num}">{n}건 ({pct(n, r["n"])})</td>'
+            f'<td style="{num}">{pct(nat[label], total)}</td></tr>'
+            for label, n in zip(d["group_order"], r["groups"]))
+        region_html = (
+            f'<h2 style="{H2}">{e(region)} 지역은</h2>'
+            f'<p>{e(region)} 소재로 확인되는 기관의 사업은 {r["n"]:,}건, {won(r["amount"])}입니다.</p>'
+            + table(("분야", e(region), "전국 비중"), rows)
+            + f'<p style="{NOTE}">지역은 소속과 기관명으로 추정했습니다. 기관명에서 시·도를 알 수 있는 사업은 '
+            f'{d["region_coverage"]:,}건({pct(d["region_coverage"], total)})뿐이라 실제와 다를 수 있습니다.</p>')
+
+    near_html = ""
+    if near:
+        items = "".join(
+            f'<li><a href="{e(h["url"])}">{e(h["name"])}</a> '
+            f'<span style="color:#8a8a8a">{e(h["agency"])} · {e(h["year_month"])} · {won(h["amount"])}</span></li>'
+            for h in near)
+        near_html = (f'<h2 style="{H2}">적어 주신 필요사항과 가까운 사업</h2><ul style="padding-left:18px;margin:0">{items}</ul>'
+                     f'<p style="{NOTE}">사업명과 필요사항 문장의 의미가 가까운 순서입니다. 우리 기관에 맞는다는 뜻은 아닙니다.</p>')
+
+    picked_html = ""
+    if picked:
+        items = "".join(f'<li><a href="{e(p["url"])}">{e(p["name"])}</a> <span style="color:#8a8a8a">{e(p["agency"])}</span></li>'
+                        for p in picked)
+        picked_html = (f'<h2 style="{H2}">담아 주신 사업 {len(picked)}건</h2><ul style="padding-left:18px;margin:0">{items}</ul>'
+                       f'<p>이 사업들의 비교표와 AI 요약은 같은 이메일로 한 번 더 신청하시면 보내 드립니다.</p>')
+
+    greeting = "" if lead else (
+        f'<p>{e(form["name"])}님, 신청해 주셔서 감사합니다. 나라장터에 올라온 공공기관 AI 관련 용역 발주계획 {total:,}건을 '
+        f'정리한 전국 공공 AX 지도 요약을 보내 드립니다.</p>')
+    op = e(operator() or "운영사")
+    return f"""<div style="font-family:Pretendard,'Malgun Gothic',sans-serif;color:#303030;max-width:760px;margin:0 auto;background:#ffffff">
+<div style="border-bottom:2px solid #0032ff;padding:16px 0;margin-bottom:16px"><div style="font-size:20px;font-weight:800;color:#111">전국 공공 AX 지도 요약</div>
+<div style="font-size:12px;color:#0032ff;font-weight:700">{op} · 공공 AX 사례 찾기</div></div>
+{greeting}{lead_table(form, lead) if lead else ""}{picked_html}
+<h2 style="{H2}">한눈에 보기</h2><p>발주 예정 사업 {total:,}건 · 2024년 {years["2024"]:,}건 → 2025년 {years["2025"]:,}건 → 2026년(9월까지) {years["2026"]:,}건</p>
+<h2 style="{H2}">분야별 규모</h2>{table(("분야", "건수", "발주금액", "2024 → 2025 → 2026(9월까지)"), groups)}
+<h2 style="{H2}">많이 발주된 사업 유형</h2>{table(("유형", "건수", "발주금액", "2024 → 2025 → 2026(9월까지)"), clusters)}
+{region_html}
+<h2 style="{H2}">사업명에 새로 많이 등장한 말</h2>{table(("말", "사업 수", "사업명 예"), rising)}
+<p style="{NOTE}">2024년보다 2025~2026년 사업명에 자주 쓰인 말입니다.</p>
+{near_html}
+<p style="margin-top:20px"><a href="{e(MAP_URL)}" style="color:#0032ff;font-weight:700">전국 공공 AX 지도 전체 보기</a> · <a href="{e(SITE_URL)}" style="color:#0032ff;font-weight:700">비슷한 사업 찾기</a></p>
+<p style="{NOTE};margin-top:20px;border-top:2px solid #0032ff;padding-top:10px">
+데이터: 조달청 나라장터 발주계획현황서비스(공공데이터포털 15129462), 2024-01 ~ 2026-09 발주 예정분. 분야·유형은 사업명을 의미가 가까운 것끼리 묶은 결과라 실제 사업 내용과 다를 수 있습니다.
+이 메일은 정보 제공용이며 조달·법률 자문이 아닙니다. 상담이 필요하시면 이 메일에 회신해 주세요. 발신: {op}</p></div>"""
+
+
+NOTE = "font-size:12px;color:#8a8a8a"
+
+
+def lead_table(form, lead):
+    e = html.escape
+    if lead.get("unknown"):
+        status = "확인 못 함(저장소 없음·오류)"
+    else:
+        status = "신규" if lead["is_new"] else f'재방문 ({lead["visits"]}번째 신청)'
+    sent = "전국 공공 AX 지도 요약" if lead["kind"] == "map" else "비교 분석 리포트"
+    cells = (("구분", status), ("보낸 자료", sent), ("담당자명", form["name"]), ("소속", form["org"]),
+             ("이메일", form["email"]), ("검색어", form["query"]), ("필요사항", form["needs"]))
+    rows = "".join(f'<tr><td style="{TD};white-space:nowrap">{k}</td><td style="{TD};white-space:pre-wrap">{e(v)}</td></tr>'
+                   for k, v in cells)
+    return f'<h2 style="{H2}">문의자 정보</h2><table style="border-collapse:collapse;font-size:14px">{rows}</table>'
+
+
 def handle(body, ip):
     form = validate(body)
     check_rate(ip, form["email"])
-    projects = collect(form["ids"])
-    summary = stats(projects)
-    ai_text = ai_summary(form, projects, summary)
+    picked = collect(form["ids"]) if form["ids"] else []
+    try:
+        lead = leads.register(form["email"], form["name"], form["org"], form["ids"], form["query"], form["needs"])
+    except (OSError, ValueError, KeyError, IndexError):
+        # 저장소 장애(URLError 포함)로 신청을 버리지 않는다. 아래처럼 처음 신청 여부 없이 보낸다
+        lead = None
+    if lead is None:
+        # 저장소가 없으면 첫 신청인지 알 수 없다. 담은 사업이 있으면 리포트, 없으면 지도를 보낸다
+        lead = {"is_new": True, "visits": 1, "kind": "report" if picked else "map", "unknown": True}
     lead_to = env("LEAD_TO")
-    subject = f"[공공 AI 사업 비교 리포트] {projects[0]['name'][:30]} 외 {len(projects) - 1}건" if len(projects) > 1 \
-        else f"[공공 AI 사업 비교 리포트] {projects[0]['name'][:40]}"
-    send(form["email"], subject, render(form, projects, summary, ai_text), lead_to)
-    if lead_to:
-        send(lead_to, f"[리드] {form['org']} {form['name']} · {subject}",
-             render(form, projects, summary, ai_text, for_operator=True), form["email"])
-    return {"ok": True, "count": len(projects)}
+    tag = "미확인" if lead.get("unknown") else "신규" if lead["is_new"] else "재방문"
+    if lead["kind"] == "map":
+        near = near_needs(form["needs"])
+        subject = "[전국 공공 AX 지도] 공공기관 AI 사업 현황 요약"
+        send(form["email"], subject, render_map(form, picked, near), lead_to)
+        if lead_to:
+            send(lead_to, f"[리드·{tag}] {form['org']} {form['name']} · 지도 발송",
+                 render_map(form, picked, near, lead=lead), form["email"])
+    else:
+        summary = stats(picked)
+        ai_text = ai_summary(form, picked, summary)
+        subject = f"[공공 AI 사업 비교 리포트] {picked[0]['name'][:30]} 외 {len(picked) - 1}건" if len(picked) > 1 \
+            else f"[공공 AI 사업 비교 리포트] {picked[0]['name'][:40]}"
+        send(form["email"], subject, render(form, picked, summary, ai_text), lead_to)
+        if lead_to:
+            send(lead_to, f"[리드·{tag}] {form['org']} {form['name']} · {subject}",
+                 render(form, picked, summary, ai_text, lead=lead), form["email"])
+    # 첫 신청인지는 응답에 담지 않는다. 남의 이메일로 첫 신청 여부를 알아낼 수 없게 한다 (7강 #65)
+    return {"ok": True}
