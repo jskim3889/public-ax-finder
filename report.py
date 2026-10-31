@@ -1,7 +1,9 @@
 """신청자에게 자료를 메일로 보낸다 (운영사 부가서비스용).
 
-처음 신청한 이메일에는 전국 공공 AX 지도 요약을, 다시 신청한 이메일이 사업을 담았으면
-그 사업들의 비교 분석 리포트를 보낸다. 첫 신청 여부는 leads.py가 판단하고 화면에는 알리지 않는다.
+두 자료를 따로 신청받는다. 이전 신청 여부와 상관없이 요청한 자료를 보낸다.
+    kind="map"     전국 공공 AX 지도 요약 (사업을 담지 않아도 된다)
+    kind="report"  결과 카드에서 고른 사업들의 비교 분석 리포트 (1~10건)
+신청 기록은 leads.py가 남기고, 신규·재방문 표시는 운영사 메일에만 쓴다.
 
 환경변수로 켜고 끈다. 운영사 정보·메일 계정·DB 키는 저장소에 두지 않는다.
     LEAD_FORM_ENABLED=1        기능 켜기
@@ -11,8 +13,8 @@
     SMTP_HOST, SMTP_PORT       발송 서버 (기본 smtp.gmail.com:465, 하이웍스는 smtps.hiworks.com:465, 둘 다 SSL)
     REPORT_MODEL               AI 요약 모델 (기본 anthropic/claude-haiku-5.5)
     MAIL_DRY_RUN=1             메일을 보내지 않고 cache/outbox/에 .eml로 남긴다 (로컬 시험)
-    SITE_URL                   지도 메일에 넣을 검색 화면 주소 (기본 과제 배포 주소)
-    SUPABASE_URL, SUPABASE_KEY 신청자 저장소 (leads.py). 없으면 첫 신청 여부를 가리지 않는다
+    SITE_URL, MAP_URL          메일에 넣을 검색 화면·전국 지도 주소 (기본은 과제 배포 주소)
+    SUPABASE_URL, SUPABASE_KEY 신청자 저장소 (leads.py). 없어도 메일은 보내고 운영사 메일에 "미확인"으로 표시
 
 신청자 정보(이름·소속·이메일)와 신청 기록은 Supabase에 두고, 마지막 이용일로부터 1년 뒤 지운다.
 """
@@ -36,8 +38,10 @@ import search_core
 ROOT = Path(__file__).resolve().parent
 OUTBOX = ROOT / "cache" / "outbox"
 CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
-MAP_URL = "https://jskim3889.github.io/ax-map/"
+# 과제 기간에는 개인 계정의 배포 주소를 쓴다. 회사 리소스로 옮기면 환경변수만 바꾼다 (README "리소스 이전")
+MAP_URL = os.environ.get("MAP_URL", "https://jskim3889.github.io/ax-map/")
 SITE_URL = os.environ.get("SITE_URL", "https://public-ax-finder.vercel.app")
+KINDS = ("map", "report")
 MAX_PROJECTS = 10
 LIMITS = {"name": 40, "org": 80, "email": 120, "needs": 1000}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -75,18 +79,24 @@ def check_rate(ip, email):
 def validate(body):
     if body.get("website"):  # 사람에게 보이지 않는 칸. 채워져 있으면 자동 입력(봇)으로 본다
         raise ReportError("요청을 처리하지 못했습니다.")
-    form = {k: str(body.get(k, "")).strip() for k in LIMITS}
+    # 모든 칸이 필수다. 공백만 넣은 값도 빈칸으로 본다 (화면도 같은 규칙으로 막는다)
+    form = {k: " ".join(str(body.get(k, "")).split()) if k != "needs" else str(body.get(k, "")).strip()
+            for k in LIMITS}
     for key, label in (("name", "담당자명"), ("org", "소속"), ("email", "이메일"), ("needs", "필요사항")):
         if not form[key]:
-            raise ReportError(f"{label}을(를) 입력해 주세요.")
+            raise ReportError(f"{label}을 입력해 주세요.")
         if len(form[key]) > LIMITS[key]:
-            raise ReportError(f"{label}은(는) {LIMITS[key]}자 이내로 입력해 주세요.")
+            raise ReportError(f"{label}은 {LIMITS[key]}자 이내로 입력해 주세요.")
     if not EMAIL_RE.match(form["email"]):
         raise ReportError("이메일 주소 형식을 확인해 주세요.")
     if body.get("consent") is not True:
         raise ReportError("개인정보 수집·이용에 동의해야 자료를 받으실 수 있습니다.")
-    # 담은 사업이 없어도 신청할 수 있다. 그때는 전국 공공 AX 지도 요약을 보낸다
-    form["ids"] = [str(i) for i in body.get("ids") or []][:MAX_PROJECTS]
+    form["kind"] = str(body.get("kind", ""))
+    if form["kind"] not in KINDS:
+        raise ReportError("받으실 자료를 골라 주세요.")
+    form["ids"] = [str(i) for i in body.get("ids") or []][:MAX_PROJECTS] if form["kind"] == "report" else []
+    if form["kind"] == "report" and not form["ids"]:
+        raise ReportError("비교할 사업을 1건 이상 담아 주세요.")
     form["query"] = str(body.get("query", ""))[: search_core.MAX_QUERY_CHARS]
     return form
 
@@ -312,8 +322,8 @@ def table(head, rows):
     return f'<table style="border-collapse:collapse;font-size:13px;width:100%"><tr>{th}</tr>{rows}</table>'
 
 
-def render_map(form, picked, near, lead=None):
-    """첫 신청자에게 보내는 전국 공공 AX 지도 요약. lead가 있으면 운영사용(문의자 정보 포함)"""
+def render_map(form, near, lead=None):
+    """전국 공공 AX 지도 요약. lead가 있으면 운영사용(문의자 정보 포함)"""
     e = html.escape
     d = insights()
     total = d["total"]
@@ -358,13 +368,6 @@ def render_map(form, picked, near, lead=None):
         near_html = (f'<h2 style="{H2}">적어 주신 필요사항과 가까운 사업</h2><ul style="padding-left:18px;margin:0">{items}</ul>'
                      f'<p style="{NOTE}">사업명과 필요사항 문장의 의미가 가까운 순서입니다. 우리 기관에 맞는다는 뜻은 아닙니다.</p>')
 
-    picked_html = ""
-    if picked:
-        items = "".join(f'<li><a href="{e(p["url"])}">{e(p["name"])}</a> <span style="color:#8a8a8a">{e(p["agency"])}</span></li>'
-                        for p in picked)
-        picked_html = (f'<h2 style="{H2}">담아 주신 사업 {len(picked)}건</h2><ul style="padding-left:18px;margin:0">{items}</ul>'
-                       f'<p>이 사업들의 비교표와 AI 요약은 같은 이메일로 한 번 더 신청하시면 보내 드립니다.</p>')
-
     greeting = "" if lead else (
         f'<p>{e(form["name"])}님, 신청해 주셔서 감사합니다. 나라장터에 올라온 공공기관 AI 관련 용역 발주계획 {total:,}건을 '
         f'정리한 전국 공공 AX 지도 요약을 보내 드립니다.</p>')
@@ -372,7 +375,7 @@ def render_map(form, picked, near, lead=None):
     return f"""<div style="font-family:Pretendard,'Malgun Gothic',sans-serif;color:#303030;max-width:760px;margin:0 auto;background:#ffffff">
 <div style="border-bottom:2px solid #0032ff;padding:16px 0;margin-bottom:16px"><div style="font-size:20px;font-weight:800;color:#111">전국 공공 AX 지도 요약</div>
 <div style="font-size:12px;color:#0032ff;font-weight:700">{op} · 공공 AX 사례 찾기</div></div>
-{greeting}{lead_table(form, lead) if lead else ""}{picked_html}
+{greeting}{lead_table(form, lead) if lead else ""}
 <h2 style="{H2}">한눈에 보기</h2><p>발주 예정 사업 {total:,}건 · 2024년 {years["2024"]:,}건 → 2025년 {years["2025"]:,}건 → 2026년(9월까지) {years["2026"]:,}건</p>
 <h2 style="{H2}">분야별 규모</h2>{table(("분야", "건수", "발주금액", "2024 → 2025 → 2026(9월까지)"), groups)}
 <h2 style="{H2}">많이 발주된 사업 유형</h2>{table(("유형", "건수", "발주금액", "2024 → 2025 → 2026(9월까지)"), clusters)}
@@ -406,24 +409,23 @@ def lead_table(form, lead):
 def handle(body, ip):
     form = validate(body)
     check_rate(ip, form["email"])
-    picked = collect(form["ids"]) if form["ids"] else []
+    picked = collect(form["ids"]) if form["kind"] == "report" else []
     try:
-        lead = leads.register(form["email"], form["name"], form["org"], form["ids"], form["query"], form["needs"])
+        lead = leads.register(form["email"], form["name"], form["org"], form["kind"], form["ids"],
+                              form["query"], form["needs"])
     except (OSError, ValueError, KeyError, IndexError):
-        # 저장소 장애(URLError 포함)로 신청을 버리지 않는다. 아래처럼 처음 신청 여부 없이 보낸다
+        # 저장소 장애(URLError 포함)로 신청을 버리지 않는다. 기록만 빠지고 메일은 보낸다
         lead = None
-    if lead is None:
-        # 저장소가 없으면 첫 신청인지 알 수 없다. 담은 사업이 있으면 리포트, 없으면 지도를 보낸다
-        lead = {"is_new": True, "visits": 1, "kind": "report" if picked else "map", "unknown": True}
+    lead = dict(lead or {"is_new": True, "visits": 1, "unknown": True}, kind=form["kind"])
     lead_to = env("LEAD_TO")
     tag = "미확인" if lead.get("unknown") else "신규" if lead["is_new"] else "재방문"
-    if lead["kind"] == "map":
+    if form["kind"] == "map":
         near = near_needs(form["needs"])
         subject = "[전국 공공 AX 지도] 공공기관 AI 사업 현황 요약"
-        send(form["email"], subject, render_map(form, picked, near), lead_to)
+        send(form["email"], subject, render_map(form, near), lead_to)
         if lead_to:
             send(lead_to, f"[리드·{tag}] {form['org']} {form['name']} · 지도 발송",
-                 render_map(form, picked, near, lead=lead), form["email"])
+                 render_map(form, near, lead=lead), form["email"])
     else:
         summary = stats(picked)
         ai_text = ai_summary(form, picked, summary)
@@ -433,5 +435,4 @@ def handle(body, ip):
         if lead_to:
             send(lead_to, f"[리드·{tag}] {form['org']} {form['name']} · {subject}",
                  render(form, picked, summary, ai_text, lead=lead), form["email"])
-    # 첫 신청인지는 응답에 담지 않는다. 남의 이메일로 첫 신청 여부를 알아낼 수 없게 한다 (7강 #65)
-    return {"ok": True}
+    return {"ok": True, "kind": form["kind"]}

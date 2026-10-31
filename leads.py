@@ -1,4 +1,7 @@
-"""리드(신청자) 저장소. 처음 신청한 이메일인지 서버만 판단한다 (7강 #65: 화면에는 드러내지 않는다).
+"""리드(신청자) 저장소. 신청자와 신청 기록을 남겨 운영사가 문의를 관리하게 한다.
+
+자료 발송은 이 기록과 무관하다. 지도 요약과 비교 리포트는 이전 신청 여부를 따지지 않고 요청한 대로 보낸다.
+신규·재방문 표시는 운영사 메일에만 쓴다.
 
     SUPABASE_URL, SUPABASE_KEY   Supabase 프로젝트 주소와 서버 전용 Secret key(sb_secret_…)
     LEADS_STORE=file             Supabase 없이 cache/leads.json에 저장한다 (로컬 시험 전용)
@@ -53,33 +56,27 @@ def _file_register(email, name, org, kind, ids, query, needs):
     if is_new:
         lead = data["leads"][email] = {"name": name, "org": org, "first_seen": now, "visits": 0}
     lead.update(name=name, org=org, last_seen=now, visits=lead["visits"] + 1)
-    data["requests"].append({"email": email, "kind": kind(is_new), "ids": ids, "query": query, "needs": needs,
+    data["requests"].append({"email": email, "kind": kind, "ids": ids, "query": query, "needs": needs,
                              "created_at": now})
     LOCAL.parent.mkdir(parents=True, exist_ok=True)
     LOCAL.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"is_new": is_new, "visits": lead["visits"], "kind": kind(is_new)}
+    return {"is_new": is_new, "visits": lead["visits"]}
 
 
-def register(email, name, org, ids, query, needs):
-    """신청을 기록하고 {"is_new", "visits", "kind"}를 돌려준다. 저장소가 없으면 None.
+def register(email, name, org, kind, ids, query, needs):
+    """신청을 기록하고 {"is_new", "visits"}를 돌려준다. 저장소가 없으면 None.
 
-    kind: 처음 신청이거나 담은 사업이 없으면 "map"(전국 공공 AX 지도), 다시 온 신청자가 사업을 담았으면 "report"
+    kind: "map"(전국 공공 AX 지도 요약) 또는 "report"(고른 사업 비교 리포트). 신청자가 고른 그대로 기록한다
     """
     email = email.strip().lower()
     store = backend()
-
-    def kind(is_new):
-        return "map" if is_new or not ids else "report"
-
     if store == "file":
         return _file_register(email, name, org, kind, ids, query, needs)
     if store != "supabase":
         return None
-    # 한 번의 호출로 조회·등록·방문 수 갱신을 묶는다. 동시에 두 번 눌러도 처음 신청은 한 번만 잡힌다
+    # 한 번의 호출로 조회·등록·방문 수 갱신을 묶는다. 동시에 두 번 눌러도 신규는 한 번만 잡힌다
     row = _rpc("register_lead", {"p_email": email, "p_name": name, "p_org": org})
     row = row[0] if isinstance(row, list) else row
-    result = {"is_new": bool(row["is_new"]), "visits": int(row["visits"])}
-    result["kind"] = kind(result["is_new"])
-    _rpc("log_lead_request", {"p_lead": row["lead_id"], "p_kind": result["kind"], "p_ids": ids,
+    _rpc("log_lead_request", {"p_lead": row["lead_id"], "p_kind": kind, "p_ids": ids,
                               "p_query": query, "p_needs": needs})
-    return result
+    return {"is_new": bool(row["is_new"]), "visits": int(row["visits"])}

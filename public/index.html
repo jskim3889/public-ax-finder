@@ -86,6 +86,12 @@
   #reportForm label.check { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; }
   .hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
   .dlg-msg { margin: 0; font-size: 13px; min-height: 18px; }
+  .req { color: var(--warn); margin-left: 2px; }
+  .req-note { margin: 0; font-size: 12px; color: var(--muted); }
+  .field-err { font-size: 12px; font-weight: 400; color: var(--warn); min-height: 0; }
+  .field-err:empty { display: none; }
+  #reportForm input[aria-invalid="true"], #reportForm textarea[aria-invalid="true"] { border-color: var(--warn); }
+  #dlgSubmit:disabled { opacity: .45; cursor: not-allowed; }
   .dlg-msg.error { color: var(--warn); }
   .dlg-msg.ok { color: var(--brand); font-weight: 700; }
   .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -148,25 +154,27 @@
 </div>
 
 <dialog id="reportDialog">
-  <form id="reportForm" method="dialog">
+  <form id="reportForm" method="dialog" novalidate>
     <h2 id="dlgTitle">자료 메일로 받기</h2>
     <p class="dlg-lead" id="dlgLead"></p>
     <ul id="dlgList" class="dlg-list"></ul>
-    <label>담당자명 <input name="name" maxlength="40" required autocomplete="name"></label>
-    <label>소속 (기관·부서) <input name="org" maxlength="80" required autocomplete="organization"></label>
-    <label>이메일 <input name="email" type="email" maxlength="120" required autocomplete="email"></label>
-    <label>필요사항 <textarea name="needs" maxlength="1000" rows="4" required placeholder="예: 내년 민원 챗봇 도입을 검토 중입니다. 비슷한 기관의 예산 규모와 발주 방식을 알고 싶습니다."></textarea></label>
+    <p class="req-note"><span class="req">*</span> 표시는 모두 입력해야 보내 드릴 수 있습니다.</p>
+    <label><span>담당자명<span class="req">*</span></span> <input name="name" maxlength="40" required aria-required="true" autocomplete="name"><span class="field-err" data-for="name"></span></label>
+    <label><span>소속 (기관·부서)<span class="req">*</span></span> <input name="org" maxlength="80" required aria-required="true" autocomplete="organization"><span class="field-err" data-for="org"></span></label>
+    <label><span>이메일<span class="req">*</span></span> <input name="email" type="email" maxlength="120" required aria-required="true" autocomplete="email"><span class="field-err" data-for="email"></span></label>
+    <label><span>필요사항<span class="req">*</span></span> <textarea name="needs" maxlength="1000" rows="4" required aria-required="true" placeholder="예: 내년 민원 챗봇 도입을 검토 중입니다. 비슷한 기관의 예산 규모와 발주 방식을 알고 싶습니다."></textarea><span class="field-err" data-for="needs"></span></label>
     <input name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
     <div class="consent">
       <p><b>개인정보 수집·이용 안내</b> (<span class="opname">운영사</span>)</p>
       <ul>
         <li>수집 항목: 담당자명, 소속, 이메일, 필요사항</li>
-        <li>목적: 자료(전국 공공 AX 지도 요약, 비교 분석 리포트) 발송, 이전 신청 여부 확인, 요청하신 내용에 대한 회신·상담</li>
+        <li>목적: 자료(전국 공공 AX 지도 요약, 비교 분석 리포트) 발송, 요청하신 내용에 대한 회신·상담</li>
         <li>보유 기간: 마지막 신청일로부터 1년 뒤 자동 삭제</li>
         <li>동의를 거부하실 수 있으며, 거부하시면 자료를 받으실 수 없습니다.</li>
         <li>담당자명·소속·이메일과 신청 기록(담은 사업, 검색어, 필요사항)은 운영사 데이터베이스(Supabase)에 저장되고, 같은 내용이 운영사 메일로 전달됩니다. 필요사항은 관련 사업 검색과 AI 요약을 위해 외부 AI 서비스(OpenRouter)로 전송됩니다.</li>
       </ul>
-      <label class="check"><input type="checkbox" name="consent" required> 위 내용에 동의합니다 (필수)</label>
+      <label class="check"><input type="checkbox" name="consent" required aria-required="true"> 위 내용에 동의합니다<span class="req">*</span></label>
+      <span class="field-err" data-for="consent"></span>
     </div>
     <label class="check"><input type="checkbox" name="remember"> 이 브라우저에 담당자명·소속·이메일 기억하기 (선택)</label>
     <p id="dlgMsg" class="dlg-msg" aria-live="polite"></p>
@@ -264,18 +272,48 @@
     refreshPickbar();
   });
 
-  // 처음 신청인지는 서버만 안다. 화면 문구는 처음이든 아니든 같게 둔다 (가입 여부를 알아낼 수 없게)
+  // 지도 요약과 비교 리포트는 따로 신청한다. 이전 신청 여부와 상관없이 고른 자료를 보낸다
   const REMEMBER_KEY = "axLeadContact";
-  let withPicks = false;
+  let kind = "map";
 
-  function openDialog(usePicks) {
-    withPicks = usePicks && lead.picked.size > 0;
+  // 필수 입력 검사. 서버(report.validate)도 같은 규칙으로 다시 막는다
+  const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  const RULES = {
+    name: (v) => v.trim() ? "" : "담당자명을 입력해 주세요.",
+    org: (v) => v.trim() ? "" : "소속을 입력해 주세요.",
+    email: (v) => !v.trim() ? "이메일을 입력해 주세요." : EMAIL_RE.test(v.trim()) ? "" : "이메일 주소 형식을 확인해 주세요. (예: name@agency.go.kr)",
+    needs: (v) => v.trim() ? "" : "필요사항을 입력해 주세요.",
+    consent: (_, el) => el.checked ? "" : "개인정보 수집·이용에 동의해 주세요.",
+  };
+  const touched = new Set();
+
+  function checkForm(showAll) {
     const f = $("reportForm");
-    $("dlgTitle").textContent = withPicks ? "비교 분석 리포트 받기" : "전국 공공 AX 지도 요약 받기";
-    $("dlgLead").innerHTML = withPicks
-      ? `담으신 사업 <b>${lead.picked.size}</b>건으로 신청합니다. 처음 신청하시는 이메일에는 전국 공공 AX 지도 요약을 먼저 보내 드리고, 이전에 신청하신 이메일에는 담으신 사업의 비교표와 AI 요약을 보내 드립니다.`
+    let ok = true;
+    for (const [name, rule] of Object.entries(RULES)) {
+      const el = f[name];
+      const err = rule(el.value, el);
+      if (err) ok = false;
+      const show = showAll || touched.has(name);
+      el.setAttribute("aria-invalid", err && show ? "true" : "false");
+      f.querySelector(`.field-err[data-for="${name}"]`).textContent = show ? err : "";
+    }
+    $("dlgSubmit").disabled = !ok || sending;
+    return ok;
+  }
+  let sending = false;
+  ["input", "change"].forEach((type) => $("reportForm").addEventListener(type, () => checkForm(false)));
+  $("reportForm").addEventListener("focusout", (e) => { if (e.target.name in RULES) { touched.add(e.target.name); checkForm(false); } });
+
+  function openDialog(which) {
+    kind = which;
+    const f = $("reportForm");
+    const report = kind === "report";
+    $("dlgTitle").textContent = report ? "비교 분석 리포트 받기" : "전국 공공 AX 지도 요약 받기";
+    $("dlgLead").innerHTML = report
+      ? `담으신 사업 <b>${lead.picked.size}</b>건의 비교표와 AI 요약을 메일로 보내 드립니다.`
       : "분야별 규모, 많이 발주된 사업 유형, 소속 지역 현황, 새로 늘어난 사업을 정리해 메일로 보내 드립니다.";
-    $("dlgList").innerHTML = withPicks ? [...lead.picked.values()].map((n) => `<li>${esc(n)}</li>`).join("") : "";
+    $("dlgList").innerHTML = report ? [...lead.picked.values()].map((n) => `<li>${esc(n)}</li>`).join("") : "";
     try {
       const saved = JSON.parse(localStorage.getItem(REMEMBER_KEY) || "null");
       if (saved) {
@@ -284,20 +322,28 @@
       }
     } catch (_) { /* 저장소를 못 쓰는 브라우저는 빈 칸으로 시작한다 */ }
     $("dlgMsg").textContent = ""; $("dlgMsg").className = "dlg-msg";
-    $("dlgSubmit").disabled = false;
+    $("dlgSubmit").textContent = report ? "리포트 받기" : "지도 요약 받기";
+    touched.clear();
+    sending = false;
+    checkForm(false);
     $("reportDialog").showModal();
   }
 
-  $("pickopen").addEventListener("click", () => openDialog(true));
-  $("mapOpen").addEventListener("click", () => openDialog(false));
+  $("pickopen").addEventListener("click", () => openDialog("report"));
+  $("mapOpen").addEventListener("click", () => openDialog("map"));
   $("dlgCancel").addEventListener("click", () => $("reportDialog").close());
 
   $("reportForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const f = e.target;
     const msg = $("dlgMsg");
+    if (!checkForm(true)) {
+      f.querySelector('[aria-invalid="true"]')?.focus();
+      return;
+    }
+    sending = true;
     $("dlgSubmit").disabled = true;
-    msg.className = "dlg-msg"; msg.textContent = withPicks
+    msg.className = "dlg-msg"; msg.textContent = kind === "report"
       ? "자료를 만들고 있습니다. 비교 리포트는 AI 요약 때문에 30초 정도 걸릴 수 있습니다…"
       : "자료를 만들고 있습니다…";
     const controller = new AbortController();
@@ -306,7 +352,7 @@
       const res = await fetch("/api/report", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
         body: JSON.stringify({
-          ids: withPicks ? [...lead.picked.keys()] : [], query: current.query,
+          kind, ids: kind === "report" ? [...lead.picked.keys()] : [], query: current.query,
           name: f.name.value, org: f.org.value, email: f.email.value, needs: f.needs.value,
           website: f.website.value, consent: f.consent.checked,
         }),
@@ -318,12 +364,13 @@
         else localStorage.removeItem(REMEMBER_KEY);
       } catch (_) { /* 기억하기는 편의 기능이라 실패해도 넘어간다 */ }
       msg.className = "dlg-msg ok";
-      msg.textContent = `${f.email.value} 주소로 메일을 보냈습니다. 받은편지함(또는 스팸함)을 확인해 주세요.`;
+      msg.textContent = `${f.email.value.trim()} 주소로 ${kind === "report" ? "비교 분석 리포트를" : "전국 공공 AX 지도 요약을"} 보냈습니다. 받은편지함(또는 스팸함)을 확인해 주세요.`;
       $("dlgCancel").textContent = "닫기";
     } catch (err) {
       msg.className = "dlg-msg error";
       msg.textContent = err.name === "AbortError" ? "응답이 너무 늦어 요청을 멈췄습니다. 잠시 뒤 다시 시도해 주세요." : err.message;
-      $("dlgSubmit").disabled = false;
+      sending = false;
+      checkForm(true);
     } finally {
       clearTimeout(timer);
     }
